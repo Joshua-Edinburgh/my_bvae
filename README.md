@@ -1,7 +1,8 @@
 # my_bvae
 my test version of beta-vae
 
-To run the code, we should download dataset (only the .npz file) at <url>https://github.com/deepmind/dsprites-dataset<url> and save this file as following:
+To run the code, we should download dataset (only the .npz file) at 
+<url>https://github.com/deepmind/dsprites-dataset<url> and save this file as following:
 
 .
 └── data
