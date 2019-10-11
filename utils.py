@@ -1,10 +1,3 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Wed Oct  9 18:54:41 2019
-
-@author: Joshua
-"""
-
 """utils.py"""
 
 import argparse
