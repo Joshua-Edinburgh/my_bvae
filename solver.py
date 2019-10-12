@@ -162,7 +162,34 @@ class Solver(object):
         pbar.write("[Training Finished]")
         pbar.close()
 
-
+    def gen_z(self, gen_size=10):
+        '''
+            Randomly sample x from dataloader, feed it to encoder, generate z
+            Return z and true latent value
+            @ out_z should be a list with length equals gen_size, each object has 
+            size B*z_dim
+            @ out_y should be a list with length equals gen_size, each object has
+            size B*6
+        '''
+        out = False
+        gen_cnt = 0
+        pbar = tqdm(total=gen_size)
+        pbar.update(gen_cnt)
+        out_z = []
+        out_y = []
+        
+        while not out:
+            for x,y in self.data_loader:
+                pbar.update(1)
+                gen_cnt += 1
+                out_z.append(self.net.encoder(x).data)
+                out_y.append(y.squeeze(1)[:,1:])
+                if gen_cnt >= gen_size:
+                    out = True
+                    break
+        return out_z, out_y
+        
+        
     def net_mode(self, train):
         if not isinstance(train, bool):
             raise('Only bool type is supported. True or False')
@@ -175,12 +202,7 @@ class Solver(object):
     def save_checkpoint(self, filename, silent=True):
         model_states = {'net':self.net.state_dict(),}
         optim_states = {'optim':self.optim.state_dict(),}
-        win_states = {'recon':self.win_recon,
-                      'kld':self.win_kld,
-                      'mu':self.win_mu,
-                      'var':self.win_var,}
         states = {'iter':self.global_iter,
-                  'win_states':win_states,
                   'model_states':model_states,
                   'optim_states':optim_states}
 
@@ -195,10 +217,6 @@ class Solver(object):
         if os.path.isfile(file_path):
             checkpoint = torch.load(file_path)
             self.global_iter = checkpoint['iter']
-            self.win_recon = checkpoint['win_states']['recon']
-            self.win_kld = checkpoint['win_states']['kld']
-            self.win_var = checkpoint['win_states']['var']
-            self.win_mu = checkpoint['win_states']['mu']
             self.net.load_state_dict(checkpoint['model_states']['net'])
             self.optim.load_state_dict(checkpoint['optim_states']['optim'])
             print("=> loaded checkpoint '{} (iter {})'".format(file_path, self.global_iter))

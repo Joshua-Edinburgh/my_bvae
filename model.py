@@ -82,28 +82,6 @@ class BetaVAE_H(nn.Module):
 
 
 
-
-    def weight_init(self):
-        for block in self._modules:
-            for m in self._modules[block]:
-                kaiming_init(m)
-
-    def forward(self, x):
-        distributions = self._encode(x)
-        mu = distributions[:, :self.z_dim]
-        logvar = distributions[:, self.z_dim:]
-        z = reparametrize(mu, logvar)
-        x_recon = self._decode(z).view(x.size())
-
-        return x_recon, mu, logvar
-
-    def _encode(self, x):
-        return self.encoder(x)
-
-    def _decode(self, z):
-        return self.decoder(z)
-
-
 def kaiming_init(m):
     if isinstance(m, (nn.Linear, nn.Conv2d)):
         init.kaiming_normal(m.weight)
