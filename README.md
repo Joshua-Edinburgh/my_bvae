@@ -14,7 +14,7 @@ To do list:
 
 + [x] Make a simple beta-vae version that can run.
 + [ ] Implement different metrics that can measure the quality of embeddings
-  + [ ] Qualitative, i.e., direct show the figure or .gif
+  + [x] Qualitative, i.e., direct show the figure or .gif
   + [x] Quantitive 1 ($\rho$), topological similarity
   + [ ] Quantitive 2 (matrix $R$), from Cian's paper
 + [ ] Observe the relationship between quantitive metric 1 and 2

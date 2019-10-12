@@ -80,11 +80,6 @@ class Solver(object):
 
         self.z_dim = args.z_dim
         self.beta = args.beta
-        #self.gamma = args.gamma
-        #self.C_max = args.C_max
-        #self.C_stop_iter = args.C_stop_iter
-        #self.objective = args.objective
-        #self.model = args.model
         self.lr = args.lr
         self.beta1 = args.beta1
         self.beta2 = args.beta2

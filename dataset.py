@@ -27,7 +27,32 @@ import torch.utils.data as Data # Dataset, DataLoader
 def is_power_of_2(num):
     return ((num & (num - 1)) == 0) and num != 0
 
+# Helper function to show images
+def save_images_grid(imgs_, args, num_images=25, idx_figs=1):
+    ncols = int(np.ceil(num_images**0.5))
+    nrows = int(np.ceil(num_images / ncols))
+    fig, axes = plt.subplots(ncols, nrows, figsize=(nrows * 3, ncols * 3))
+    axes = axes.flatten()
 
+    for ax_i, ax in enumerate(axes):
+        if ax_i < num_images:
+            ax.imshow(imgs_[ax_i], cmap='Greys_r',  interpolation='nearest')
+            ax.set_xticks([])
+            ax.set_yticks([])
+        else:
+            ax.axis('off')
+    filename = 'figures_'+str(idx_figs)+'.pdf'
+    file_path = os.path.join(args.exp_name+'/images')
+    if not os.path.exists(file_path):
+       os.makedirs(file_path) 
+    fig.savefig(os.path.join(file_path, filename))
+    
+def show_density(imgs):
+    _, ax = plt.subplots()
+    ax.imshow(imgs.mean(axis=0), interpolation='nearest', cmap='Greys_r')
+    ax.grid('off')
+    ax.set_xticks([])
+    ax.set_yticks([])
 
 def return_data(args):
     '''
@@ -58,6 +83,42 @@ def return_data(args):
 
     return data_loader
 
+def y_to_xidx_dsprite(y):
+    b_size = y.shape[0]
+    # ====== Fill y back to B*6 vector =================
+    if y.shape[-1] < 6:
+        fill = torch.ones((b_size,6-y.shape[-1]),dtype=y.dtype)
+        y_fill = torch.cat((fill,y),dim=1).squeeze(0)
+    else:
+        y_fill = y
+    # ====== Translate y back to indicies
+    y_fill[:,0:1] = torch.ones((b_size,1),dtype=y.dtype)*0.
+    y_fill[:,1:2] = torch.ones((b_size,1),dtype=y.dtype)*(y_fill[:,1:2]-1.)
+    y_fill[:,2:3] = torch.ones((b_size,1),dtype=y.dtype)*(y_fill[:,2:3]*10.-5.)
+    y_fill[:,3:4] = torch.ones((b_size,1),dtype=y.dtype)*(np.round(y_fill[:,3:4]/(2.*np.pi/40.)))    
+    y_fill[:,4:5] = torch.ones((b_size,1),dtype=y.dtype)*(np.round(y_fill[:,4:5]*32.))
+    y_fill[:,5:6] = torch.ones((b_size,1),dtype=y.dtype)*(np.round(y_fill[:,5:6]*32.))
+    
+    latents_sizes = np.asarray([ 1,  3,  6, 40, 32, 32])
+    latents_bases = np.concatenate((latents_sizes[::-1].cumprod()[::-1][1:],np.array([1,])))
+    x_idx = np.dot(y_fill, latents_bases).astype(int)
+    # ===== x_idx shape with (B,)
+    return x_idx
+  
+
+def xidxs_to_png_dsprite(y_list,args,dataset_zip):
+    
+    def ys_to_xidxs_dsprite(y_list):
+        x_idx_list = []
+        for y in y_list:
+            x_idx_list.append(y_to_xidx_dsprite(y))
+        # ======= Each element in x_idx_list has shape (B,)
+        return x_idx_list
+    x_idx_list = ys_to_xidxs_dsprite(y_list)
+    all_imgs = dataset_zip['imgs']  
+    for i, batch_imgs in enumerate(x_idx_list):
+        save_images_grid(all_imgs[batch_imgs], args, num_images=args.batch_size, idx_figs=i)
+    
 """
 # =========== Test for sampling data with specific latent values ==============
 root = os.path.join(args.dset_dir, 'dsprites_ndarray_co1sh3sc6or40x32y32_64x64.npz')
@@ -118,6 +179,10 @@ show_images_grid(imgs_sampled, 9)
 show_density(imgs_sampled)
 """
 if __name__ == '__main__':
+    #root = os.path.join(args.dset_dir, 'dsprites_ndarray_co1sh3sc6or40x32y32_64x64.npz')
+    #dataset_zip = np.load(root, allow_pickle=True, encoding='bytes')
+    xidxs_to_png_dsprite(out_y,args,dataset_zip)
+    '''
     test =return_data(args)
     flag = 0
     for x,y in test:
@@ -125,3 +190,4 @@ if __name__ == '__main__':
         flag += 1
         if flag >2:
             break
+    '''

@@ -38,15 +38,10 @@ if __name__ == "__main__":
     parser.add_argument('--seed', default=1, type=int, help='random seed')
     parser.add_argument('--cuda', default=True, type=str2bool, help='enable cuda')
     parser.add_argument('--max_iter', default=1e2, type=float, help='maximum training iteration')
-    parser.add_argument('--batch_size', default=64, type=int, help='batch size')
+    parser.add_argument('--batch_size', default=16, type=int, help='batch size')
 
     parser.add_argument('--z_dim', default=10, type=int, help='dimension of the representation z')
     parser.add_argument('--beta', default=4, type=float, help='beta parameter for KL-term in original beta-VAE')
-    #parser.add_argument('--objective', default='H', type=str, help='beta-vae objective proposed in Higgins et al. or Burgess et al. H/B')
-    #parser.add_argument('--model', default='H', type=str, help='model proposed in Higgins et al. or Burgess et al. H/B')
-    #parser.add_argument('--gamma', default=1000, type=float, help='gamma parameter for KL-term in understanding beta-VAE')
-    #parser.add_argument('--C_max', default=25, type=float, help='capacity parameter(C) of bottleneck channel')
-    #parser.add_argument('--C_stop_iter', default=1e5, type=float, help='when to stop increasing the capacity')
     parser.add_argument('--lr', default=1e-4, type=float, help='learning rate')
     parser.add_argument('--beta1', default=0.9, type=float, help='Adam optimizer beta1')
     parser.add_argument('--beta2', default=0.999, type=float, help='Adam optimizer beta2')
@@ -74,7 +69,7 @@ if __name__ == "__main__":
 
     net = Solver(args)
     net.load_checkpoint('last')
-    out_z,out_y = net.gen_z(10)
+    out_z,out_y = net.gen_z(3)
     print(out_z[0][0])
     print(out_y[0][0])
 
