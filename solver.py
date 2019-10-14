@@ -19,7 +19,8 @@ from torch.autograd import Variable
 
 from utils import cuda
 from model import BetaVAE_H
-from dataset import return_data
+from dataset import return_data, ys_to_png_dsprite
+from metrics import Metrics
 
 def reconstruction_loss(x, x_recon, distribution):
     batch_size = x.size(0)
@@ -123,7 +124,7 @@ class Solver(object):
                 self.global_iter += 1
                 pbar.update(1)
 
-                x = Variable(cuda(x, self.use_cuda))
+                x = Variable(cuda(x.float(), self.use_cuda))
                 x_recon, mu, logvar = self.net(x)
                 recon_loss = reconstruction_loss(x, x_recon, self.decoder_dist)
                 total_kld, dim_wise_kld, mean_kld = kl_divergence(mu, logvar)
@@ -177,7 +178,7 @@ class Solver(object):
             for x,y in self.data_loader:
                 pbar.update(1)
                 gen_cnt += 1
-                out_z.append(self.net.encoder(x).data)
+                out_z.append(self.net.encoder(x.float()).data)
                 out_y.append(y.squeeze(1)[:,1:])
                 if gen_cnt >= gen_size:
                     out = True

@@ -67,7 +67,7 @@ def return_data(args):
 
     root = os.path.join(dset_dir, 'dsprites_ndarray_co1sh3sc6or40x32y32_64x64.npz')
     data = np.load(root, allow_pickle=True, encoding='bytes')
-    imgs = torch.from_numpy(data['imgs']).unsqueeze(1).float()
+    imgs = torch.from_numpy(data['imgs']).unsqueeze(1)
     vals = torch.from_numpy(data['latents_values']).unsqueeze(1)
     data_set = Data.TensorDataset(imgs,vals)
 
@@ -106,7 +106,7 @@ def y_to_xidx_dsprite(y):
     return x_idx
   
 
-def xidxs_to_png_dsprite(y_list,args,dataset_zip):
+def ys_to_png_dsprite(y_list,args,dataset_zip):
     
     def ys_to_xidxs_dsprite(y_list):
         x_idx_list = []
@@ -181,7 +181,7 @@ show_density(imgs_sampled)
 if __name__ == '__main__':
     #root = os.path.join(args.dset_dir, 'dsprites_ndarray_co1sh3sc6or40x32y32_64x64.npz')
     #dataset_zip = np.load(root, allow_pickle=True, encoding='bytes')
-    xidxs_to_png_dsprite(out_y,args,dataset_zip)
+    #xidxs_to_png_dsprite(out_y,args,dataset_zip)
     '''
     test =return_data(args)
     flag = 0
