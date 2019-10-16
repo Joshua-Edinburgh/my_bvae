@@ -17,10 +17,10 @@ import torch.optim as optim
 import torch.nn.functional as F
 from torch.autograd import Variable
 
-from utils import cuda
+from utils.basic import cuda
 from model import BetaVAE_H
-from dataset import return_data, ys_to_png_dsprite
-from metrics import Metrics
+from utils.dataset import return_data, ys_to_png_dsprite
+from metrics import Metric_R, Metric_topsim
 
 def reconstruction_loss(x, x_recon, distribution):
     batch_size = x.size(0)
@@ -94,7 +94,8 @@ class Solver(object):
         self.optim = optim.Adam(self.net.parameters(), lr=self.lr,
                                     betas=(self.beta1, self.beta2))
 
-        self.ckpt_dir = os.path.join(args.ckpt_dir, args.exp_name)
+        self.exp_name = args.exp_name
+        self.ckpt_dir = os.path.join('exp_results/'+args.exp_name,args.ckpt_dir)
         if not os.path.exists(self.ckpt_dir):
             os.makedirs(self.ckpt_dir, exist_ok=True)
         self.ckpt_name = args.ckpt_name

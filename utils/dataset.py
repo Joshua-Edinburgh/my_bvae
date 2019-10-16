@@ -42,7 +42,7 @@ def save_images_grid(imgs_, args, num_images=25, idx_figs=1):
         else:
             ax.axis('off')
     filename = 'figures_'+str(idx_figs)+'.pdf'
-    file_path = os.path.join(args.exp_name+'/images')
+    file_path = os.path.join('exp_results/'+args.exp_name+'/images')
     if not os.path.exists(file_path):
        os.makedirs(file_path) 
     fig.savefig(os.path.join(file_path, filename))
@@ -105,89 +105,34 @@ def y_to_xidx_dsprite(y):
     # ===== x_idx shape with (B,)
     return x_idx
   
-
-def ys_to_png_dsprite(y_list,args,dataset_zip):
+def ys_to_xidxs_dsprite(y_list):
+    x_idx_list = []
+    for y in y_list:
+        x_idx_list.append(y_to_xidx_dsprite(y))
+    # ======= Each element in x_idx_list has shape (B,)
+    return x_idx_list
     
-    def ys_to_xidxs_dsprite(y_list):
-        x_idx_list = []
-        for y in y_list:
-            x_idx_list.append(y_to_xidx_dsprite(y))
-        # ======= Each element in x_idx_list has shape (B,)
-        return x_idx_list
+def ys_to_png_dsprite(y_list,args,dataset_zip):
     x_idx_list = ys_to_xidxs_dsprite(y_list)
     all_imgs = dataset_zip['imgs']  
     for i, batch_imgs in enumerate(x_idx_list):
         save_images_grid(all_imgs[batch_imgs], args, num_images=args.batch_size, idx_figs=i)
-    
-"""
-# =========== Test for sampling data with specific latent values ==============
-root = os.path.join(args.dset_dir, 'dsprites_ndarray_co1sh3sc6or40x32y32_64x64.npz')
-dataset_zip = np.load(root, allow_pickle=True, encoding='bytes')
 
-print('Keys in the dataset:', dataset_zip.keys())
-imgs = dataset_zip['imgs']
-latents_values = dataset_zip['latents_values']
-latents_classes = dataset_zip['latents_classes']
-metadata = dataset_zip['metadata'][()]
-latents_sizes = metadata[b'latents_sizes']
-latents_bases = np.concatenate((latents_sizes[::-1].cumprod()[::-1][1:],np.array([1,])))
+def ys_to_xbool_dsprite(y_list,args,dataset_zip):
+    x_idx_list = ys_to_xidxs_dsprite(y_list)
+    all_imgs = dataset_zip['imgs']  
+    x_list = []
+    for i, batch_imgs in enumerate(x_idx_list):
+        x_list.append(all_imgs[batch_imgs])
+    return x_list
 
-
-# Helper function to show images
-def show_images_grid(imgs_, num_images=25):
-  ncols = int(np.ceil(num_images**0.5))
-  nrows = int(np.ceil(num_images / ncols))
-  _, axes = plt.subplots(ncols, nrows, figsize=(nrows * 3, ncols * 3))
-  axes = axes.flatten()
-
-  for ax_i, ax in enumerate(axes):
-    if ax_i < num_images:
-      ax.imshow(imgs_[ax_i], cmap='Greys_r',  interpolation='nearest')
-      ax.set_xticks([])
-      ax.set_yticks([])
-    else:
-      ax.axis('off')
-
-def show_density(imgs):
-  _, ax = plt.subplots()
-  ax.imshow(imgs.mean(axis=0), interpolation='nearest', cmap='Greys_r')
-  ax.grid('off')
-  ax.set_xticks([])
-  ax.set_yticks([])
-
-def latent_to_index(latents):
-  return np.dot(latents, latents_bases).astype(int)
-
-
-def sample_latent(size=1):
-  samples = np.zeros((size, latents_sizes.size))
-  for lat_i, lat_size in enumerate(latents_sizes):
-    samples[:, lat_i] = np.random.randint(lat_size, size=size)
-
-  return samples
-
-# ============ Conditional Sampling Example ===================================
-## Fix posX latent to left
-latents_sampled = sample_latent(size=10)
-latents_sampled[:, -2] = 0
-indices_sampled = latent_to_index(latents_sampled)
-imgs_sampled = imgs[indices_sampled]
-# Samples
-show_images_grid(imgs_sampled, 9)
-
-# Show the density too to check
-show_density(imgs_sampled)
-"""
 if __name__ == '__main__':
-    #root = os.path.join(args.dset_dir, 'dsprites_ndarray_co1sh3sc6or40x32y32_64x64.npz')
-    #dataset_zip = np.load(root, allow_pickle=True, encoding='bytes')
-    #xidxs_to_png_dsprite(out_y,args,dataset_zip)
-    '''
-    test =return_data(args)
-    flag = 0
-    for x,y in test:
-        print(x,y)
-        flag += 1
-        if flag >2:
-            break
-    '''
+    root = os.path.join('../'+args.dset_dir,'dsprites_ndarray_co1sh3sc6or40x32y32_64x64.npz')
+    dataset_zip = np.load(root, allow_pickle=True, encoding='bytes')
+    # ======= Test whether the images can be correctly saved ========
+    #ys_to_png_dsprite(out_y,args,dataset_zip)
+    # ======= Test whether the ys correctly change to xbool_list ========
+    x_list = ys_to_xbool_dsprite(out_y,args,dataset_zip)
+    
+    
+    

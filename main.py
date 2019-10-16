@@ -13,8 +13,8 @@ import numpy as np
 import torch
 
 from solver import Solver
-from utils import str2bool
-from metrics import Metrics
+from utils.basic import str2bool
+from metrics import Metric_topsim
 
 torch.backends.cudnn.enabled = True
 torch.backends.cudnn.benchmark = True
@@ -27,8 +27,6 @@ def main(args):
     np.random.seed(seed)
 
     net = Solver(args)
-    #net.load_checkpoint('last')
-    #out_z,out_y = net.gen_z(10)
     net.train()
 
 if __name__ == "__main__":
@@ -60,18 +58,18 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
 
-    main(args)
+    #main(args)
 
-    #seed = args.seed
-    #torch.manual_seed(seed)
-    #torch.cuda.manual_seed(seed)
-    #np.random.seed(seed)
+    seed = args.seed
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    np.random.seed(seed)
 
-    #net = Solver(args)
-    #net.load_checkpoint('last')
-    #out_z,out_y = net.gen_z(3)
-    #print(out_z[0][0])
-    #print(out_y[0][0])
+    net = Solver(args)
+    #net.train()
+    net.load_checkpoint('last')
+    out_z,out_y = net.gen_z(3)
+
 
 
 
