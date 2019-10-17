@@ -68,7 +68,7 @@ if __name__ == "__main__":
     net = Solver(args)
     #net.train()
     net.load_checkpoint('last')
-    out_z,out_y = net.gen_z(3)
+    out_z,out_y = net.gen_z(1000)
 
 
 

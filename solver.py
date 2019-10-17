@@ -179,7 +179,8 @@ class Solver(object):
             for x,y in self.data_loader:
                 pbar.update(1)
                 gen_cnt += 1
-                out_z.append(self.net.encoder(x.float()).data)
+                x = Variable(cuda(x.float(), self.use_cuda))
+                out_z.append(self.net.encoder(x).data)
                 out_y.append(y.squeeze(1)[:,1:])
                 if gen_cnt >= gen_size:
                     out = True

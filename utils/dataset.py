@@ -102,6 +102,7 @@ def y_to_xidx_dsprite(y):
     latents_sizes = np.asarray([ 1,  3,  6, 40, 32, 32])
     latents_bases = np.concatenate((latents_sizes[::-1].cumprod()[::-1][1:],np.array([1,])))
     x_idx = np.dot(y_fill, latents_bases).astype(int)
+    x_idx[np.where(x_idx>737279)] = 737279
     # ===== x_idx shape with (B,)
     return x_idx
   
@@ -132,7 +133,7 @@ if __name__ == '__main__':
     # ======= Test whether the images can be correctly saved ========
     #ys_to_png_dsprite(out_y,args,dataset_zip)
     # ======= Test whether the ys correctly change to xbool_list ========
-    x_list = ys_to_xbool_dsprite(out_y,args,dataset_zip)
+    out_x = ys_to_xbool_dsprite(out_y,args,dataset_zip)
     
     
     

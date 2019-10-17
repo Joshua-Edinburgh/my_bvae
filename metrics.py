@@ -164,6 +164,8 @@ class Metric_R:
         fig_name = self.save_path+'/hinton'+part_name+'.pdf'
         fig.savefig(fig_name)
 
+
+
 class Metric_topsim:
     def __init__(self,args):
         self.b_siz = args.batch_size
@@ -204,8 +206,8 @@ class Metric_topsim:
             for i in range(len_zy):
                 for j in range(i):
                     if i!=j:
-                        z_dist.append(self.tensor_dist(z_upk[i],z_upk[j],self.z_dist))
-                        y_dist.append(self.tensor_dist(y_upk[i],y_upk[j],self.y_dist))
+                        z_dist.append(self.tensor_dist(z_upk[i],z_upk[j],self.z_dist).item())
+                        y_dist.append(self.tensor_dist(y_upk[i],y_upk[j],self.y_dist).item())
                         
         dist_table = pd.DataFrame({'ZD':np.asarray(z_dist),
                                    'YD':np.asarray(y_dist)})
@@ -248,7 +250,7 @@ if __name__ == "__main__":
     metric_topsim = Metric_topsim(args)
     corr = metric_topsim.top_sim_zy(out_z,out_y)
     print('Topsim between z and y is: %.4f'%corr)
-    #out_x = ys_to_xbool_dsprite(out_y,args,dataset_zip)
+    out_x = ys_to_xbool_dsprite(out_y,args,dataset_zip)
     corrX_Y = metric_topsim.top_sim_xzoy(out_y,out_x)
     print('Topsim between y and X is: %.4f'%corrX_Y)
     # ========== Test for Metric_R ================
