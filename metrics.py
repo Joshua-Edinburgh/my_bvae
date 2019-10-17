@@ -29,6 +29,9 @@ def cos_dist(x1,x2):
     cos = nn.CosineSimilarity(dim=0, eps=1e-6)
     return cos(x1,x2)
 
+def euclidean_dist(x1,x2,p=2):
+    return torch.dist(x1,x2,p=p)
+
 def edit_dist(x1,x2):
     len1, len2 = x1.shape[0], x2.shape[0]
     DM = [0]
@@ -44,6 +47,7 @@ def edit_dist(x1,x2):
         DM = DM_new
         
     return DM[-1]
+
 
 def mse(predicted, target):
     ''' mean square error '''
@@ -169,17 +173,21 @@ class Metric_R:
 class Metric_topsim:
     def __init__(self,args):
         self.b_siz = args.batch_size
-        self.smp_flag = False   # When z,y is too large, use True, we may sample
-        self.smp_size = 100     # The number of sampled pairs
-        self.z_dist = 'cosine'
-        self.y_dist = 'cosine'
-        self.x_dist = 'Xcosine'
+        self.smp_flag = True   # When z,y is too large, use True, we may sample
+        self.smp_size = 1e6     # The number of sampled pairs
+        self.z_metr = 'cosine'
+        self.y_metr = 'cosine'
+        self.x_metr = 'Xcosine'
         
     def tensor_dist(self,tens1,tens2,dist_type='cosine'):
         if dist_type == 'cosine':
             return cos_dist(tens1,tens2)
         if dist_type == 'edit':
             return edit_dist(tens1,tens2)
+        if dist_type == 'EU':
+            return euclidean_dist(tens1,tens2,p=2)
+        if dist_type == 'XEU':
+            return euclidean_dist(tens1.view(-1).float(),tens2.view(-1).float(),p=2)
         if dist_type == 'Xcosine':
             return cos_dist(tens1.view(-1).float(),tens2.view(-1).float())
         else:
@@ -188,27 +196,34 @@ class Metric_topsim:
     def top_sim_zy(self, z_list, y_list):
         z_upk = unpack_batch_zoy(z_list)  # x_upk has shape B*x_dim
         y_upk = unpack_batch_zoy(y_list)
-        smp_cnt = self.smp_size
+        if z_upk.is_cuda:
+            z_upk = z_upk.cpu()
+        if y_upk.is_cuda:
+            y_upk = y_upk.cpu()
         len_zy = z_upk.shape[0]
+        smp_cnt = self.smp_size
+        smp_left = (len_zy**2-len_zy)*0.2     
         z_dist = []
         y_dist = []    
         
         if self.smp_flag:  
-            smp_set_list = []
-            while smp_cnt > 0:
+#            smp_set_list = []
+            while smp_cnt > 0 and smp_left > 0:
                 i,j = np.random.randint(0,len_zy,size=2)
-                smp_set_list = set([i,j])
-                if set([i,j]) not in smp_set_list:
+#                if set([i,j]) not in smp_set_list and i!=j:
+#                    smp_set_list.append(set([i,j]))
+#                    smp_left -= 1
+                if i!=j:
                     smp_cnt -= 1
-                    z_dist.append(self.tensor_dist(z_upk[i],z_upk[j],self.z_dist))
-                    y_dist.append(self.tensor_dist(y_upk[i],y_upk[j],self.y_dist))                               
+                    z_dist.append(self.tensor_dist(z_upk[i],z_upk[j],self.z_metr))
+                    y_dist.append(self.tensor_dist(y_upk[i],y_upk[j],self.y_metr))
         else:
             for i in range(len_zy):
                 for j in range(i):
                     if i!=j:
-                        z_dist.append(self.tensor_dist(z_upk[i],z_upk[j],self.z_dist).item())
-                        y_dist.append(self.tensor_dist(y_upk[i],y_upk[j],self.y_dist).item())
-                        
+                        z_dist.append(self.tensor_dist(z_upk[i],z_upk[j],self.z_metr))
+                        y_dist.append(self.tensor_dist(y_upk[i],y_upk[j],self.y_metr))
+        print('dis_zy_done')              
         dist_table = pd.DataFrame({'ZD':np.asarray(z_dist),
                                    'YD':np.asarray(y_dist)})
         corr_pearson = dist_table.corr()['ZD']['YD']            
@@ -217,27 +232,34 @@ class Metric_topsim:
     def top_sim_xzoy(self, zoy_list, x_list):
         zoy_upk = unpack_batch_zoy(zoy_list)        # To [lis*b_size,zoy_dim]
         x_upk = upack_batch_x(x_list)               # To [lis*b_size,64,64]
-        smp_cnt = self.smp_size
+        if zoy_upk.is_cuda:
+            zoy_upk = zoy_upk.cpu()
+        if x_upk.is_cuda:
+            x_upk = x_upk.cpu()   
         len_x = x_upk.shape[0]
+        smp_cnt = self.smp_size
+        smp_left = (len_x**2-len_x)*0.2    
         zoy_dist = []
         x_dist = []
         
         if self.smp_flag:  
-            smp_set_list = []
-            while smp_cnt > 0:
+#            smp_set_list = []
+            while smp_cnt > 0 and smp_left > 0:
                 i,j = np.random.randint(0,len_x,size=2)
-                smp_set_list = set([i,j])
-                if set([i,j]) not in smp_set_list:
+#                if set([i,j]) not in smp_set_list and i!=j:
+#                    smp_set_list.append(set([i,j]))
+#                    smp_left -= 1
+                if i!=j:
                     smp_cnt -= 1
-                    zoy_dist.append(self.tensor_dist(zoy_upk[i],zoy_upk[j],self.z_dist))
-                    x_dist.append(self.tensor_dist(x_upk[i],x_upk[j],self.x_dist))                               
+                    zoy_dist.append(self.tensor_dist(zoy_upk[i],zoy_upk[j],self.z_metr))
+                    x_dist.append(self.tensor_dist(x_upk[i],x_upk[j],self.x_metr))                        
         else:
             for i in range(len_x):
                 for j in range(i):
                     if i!=j:
-                        zoy_dist.append(self.tensor_dist(zoy_upk[i],zoy_upk[j],self.z_dist))
-                        x_dist.append(self.tensor_dist(x_upk[i],x_upk[j],self.x_dist))
-                        
+                        zoy_dist.append(self.tensor_dist(zoy_upk[i],zoy_upk[j],self.z_metr))
+                        x_dist.append(self.tensor_dist(x_upk[i],x_upk[j],self.x_metr))
+        print('dis_xzoy_done')               
         dist_table = pd.DataFrame({'ZOYD':np.asarray(zoy_dist),
                                    'XD':np.asarray(x_dist)})
         corr_pearson = dist_table.corr()['ZOYD']['XD']            
