@@ -275,9 +275,9 @@ if __name__ == "__main__":
     metric_topsim = Metric_topsim(args)
     corr = metric_topsim.top_sim_zy(out_z,out_y)
     print('Topsim between z and y is: %.4f'%corr)
-    out_x = ys_to_xbool_dsprite(out_y,args,dataset_zip)
-    corrX_Y = metric_topsim.top_sim_xzoy(out_y,out_x)
-    print('Topsim between y and X is: %.4f'%corrX_Y)
+    #out_x = ys_to_xbool_dsprite(out_y,args,dataset_zip)
+    #corrX_Y = metric_topsim.top_sim_xzoy(out_y,out_x)
+    #print('Topsim between y and X is: %.4f'%corrX_Y)
     # ========== Test for Metric_R ================
     #metric_R = Metric_R(args)
     #a1, b1, c1, R1 = metric_R.dise_comp_info(out_z,out_y,'lasso')

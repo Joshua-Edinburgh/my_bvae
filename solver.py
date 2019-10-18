@@ -11,6 +11,7 @@ warnings.filterwarnings("ignore")
 import os
 from tqdm import tqdm
 
+import sys
 import numpy as np
 import torch
 import torch.optim as optim
@@ -19,7 +20,7 @@ from torch.autograd import Variable
 from torchvision.utils import save_image
 
 from utils.basic import cuda, grid2gif
-from model import BetaVAE_H
+from model import BetaVAE_H, reparametrize
 from utils.dataset import return_data
 from metrics import Metric_R, Metric_topsim
 
@@ -77,7 +78,8 @@ class DataGather(object):
 class Solver(object):
     def __init__(self, args):
         self.use_cuda = args.cuda and torch.cuda.is_available()
-        self.max_iter = args.max_iter
+        self.max_iter_per_gen = args.max_iter_per_gen
+        self.max_gen = args.max_gen
         self.global_iter = 0
 
         self.z_dim = args.z_dim
@@ -85,6 +87,10 @@ class Solver(object):
         self.lr = args.lr
         self.beta1 = args.beta1
         self.beta2 = args.beta2
+        
+        self.nb_preENDE = args.nb_preENDE
+        self.niter_preEN = args.niter_preEN
+        self.niter_preDE = args.niter_preDE
 
         self.nc = 1
         self.decoder_dist = 'bernoulli'
@@ -94,6 +100,11 @@ class Solver(object):
         self.net = cuda(net(self.z_dim, self.nc), self.use_cuda)
         self.optim = optim.Adam(self.net.parameters(), lr=self.lr,
                                     betas=(self.beta1, self.beta2))
+        self.optim_EN = optim.Adam(self.net.parameters(), lr=self.lr,
+                                    betas=(self.beta1, self.beta2))
+        self.optim_DE = optim.Adam(self.net.parameters(), lr=self.lr,
+                                    betas=(self.beta1, self.beta2))
+
 
         self.exp_name = args.exp_name
         self.ckpt_dir = os.path.join('exp_results/'+args.exp_name,args.ckpt_dir)
@@ -124,39 +135,97 @@ class Solver(object):
 
         self.gather = DataGather()      
 
-    def gen_z(self, gen_size=10):
-        '''
-            Randomly sample x from dataloader, feed it to encoder, generate z
-            Return z and true latent value
-            @ out_z should be a list with length equals gen_size, each object has 
-            size B*z_dim
-            @ out_y should be a list with length equals gen_size, each object has
-            size B*6
-        '''
-        self.net_mode(train=False)
-        out = False
-        gen_cnt = 0
-        #pbar = tqdm(total=gen_size)
-        #pbar.update(gen_cnt)
+    def iterated_learning(self):
         out_z = []
-        out_y = []
+        out_x = []
+        for gen_idx in range(self.max_gen):
+              
+            print('\n======= This is generation{:>2d}/{:>2d}  ======'.format(gen_idx+1,self.max_gen))
+            if gen_idx != 0:
+                print('------ Pretraining Encoder {:>2d}/{:>2d} ------'.format(gen_idx+1,self.max_gen))
+                sys.stdout.flush()
+                self.net.encoder_init()
+                self.pre_train_EN(out_z, out_x)
+                         
+            if gen_idx != 0:
+                print('------ Pretraining Decoder {:>2d}/{:>2d} ------'.format(gen_idx+1,self.max_gen))
+                sys.stdout.flush() 
+                self.net.decoder_init()
+                self.pre_train_DE(out_z, out_x)
+               
+            print('------ Interactive Training {:>2d}/{:>2d} -----'.format(gen_idx+1,self.max_gen))
+            sys.stdout.flush()
+            self.interact_train()
+                       
+            print('------- Data Generating {:>2d}/{:>2d} ---------'.format(gen_idx+1,self.max_gen))
+            sys.stdout.flush()  
+            out_z, _, out_x = self.gen_z(self.nb_preENDE)
+            
+    def pre_train_EN(self, out_z, out_x):
+        self.net_mode(True)
+        out = False
+        pre_EN_cnt = 0
+        pbar = tqdm(total=self.niter_preEN)
+        pbar.update(pre_EN_cnt)
+        loss_fun = torch.nn.MSELoss()
+        loss_table = []
+        while not out:  
+            for z,x in zip(out_z,out_x):  
+                x = Variable(cuda(x.float(), self.use_cuda))
+                z = Variable(cuda(z.float(), self.use_cuda))
+                distributions = self.net._encode(x)
+                mu = distributions[:, :self.z_dim]
+                logvar = distributions[:, self.z_dim:]
+                z_hat = reparametrize(mu, logvar)    
+                loss = loss_fun(z_hat,z)
+                loss_table.append(loss.data.item())
+                
+                self.optim_EN.zero_grad()
+                loss.backward()
+                self.optim_EN.step()
+                
+                if pre_EN_cnt >= self.niter_preEN:
+                    out = True
+                    break                
+                pre_EN_cnt += 1
+                pbar.update(1)
+        pbar.write("[Pretrain Encoder Finished]")
+        pbar.close() 
+        sys.stdout.flush()               
+        return loss_table
+    
+    def pre_train_DE(self,out_z,out_x):
+        self.net_mode(True)        
+        out = False
+        pre_DE_cnt = 0
+        pbar = tqdm(total=self.niter_preDE)
+        pbar.update(pre_DE_cnt)
+        loss_table = []
         
         while not out:
-            for x,y in self.data_loader:
-                #pbar.update(1)
-                gen_cnt += 1
+            for z, x in zip(out_z, out_x):
                 x = Variable(cuda(x.float(), self.use_cuda))
-                out_z.append(self.net.encoder(x).data)
-                out_y.append(y.squeeze(1)[:,1:])
-                if gen_cnt >= gen_size:
+                z = Variable(cuda(z.float(), self.use_cuda))
+                x_recon = self.net._decode(z)     
+                loss = reconstruction_loss(x, x_recon, self.decoder_dist)
+                loss_table.append(loss.data.item())
+                
+                self.optim_DE.zero_grad()
+                loss.backward()
+                self.optim_DE.step()
+                
+                if pre_DE_cnt >= self.niter_preDE:
                     out = True
                     break
-        self.net_mode(train=True)
-        return out_z, out_y
+                pre_DE_cnt += 1
+                pbar.update(1)                
+        pbar.write("[Pretrain Decoder Finished]")
+        pbar.close()   
+        sys.stdout.flush()               
+        return loss_table                
     
-    def train(self):
+    def interact_train(self):
         self.net_mode(train=True)
-        #self.C_max = Variable(cuda(torch.FloatTensor([self.C_max]), self.use_cuda))
         out = False
         
         indx_list = []
@@ -167,7 +236,7 @@ class Solver(object):
         info_list = []
         R_list = []
 
-        pbar = tqdm(total=self.max_iter)
+        pbar = tqdm(total=self.max_iter_per_gen)
         pbar.update(self.global_iter)
         with open(self.metric_dir+'/results.txt','a') as f:
             f.write('====== Experiment name: '+self.exp_name+'==============\n')
@@ -188,7 +257,7 @@ class Solver(object):
                 self.optim.step()
 
                 if self.global_iter%self.metric_step == 0:
-                    out_z,out_y = self.gen_z(self.top_sim_batches)
+                    out_z,out_y, _ = self.gen_z(self.top_sim_batches)
                     corr = self.metric_topsim.top_sim_zy(out_z[:20],out_y[:20])
                     dist, comp, info, R = self.metric_R.dise_comp_info(out_z,out_y,'random_forest')
                     indx_list.append(self.global_iter)
@@ -212,7 +281,7 @@ class Solver(object):
                 if self.global_iter%50000 == 0:
                     self.save_checkpoint(str(self.global_iter))
 
-                if self.global_iter >= self.max_iter:
+                if self.global_iter >= self.max_iter_per_gen:
                     out = True
                     break
                 
@@ -226,7 +295,42 @@ class Solver(object):
                  R = np.asarray(R_list))             # (len, z_dim, y_dim)
         pbar.write("[Training Finished]")
         pbar.close()
+        sys.stdout.flush()  
+
+    def gen_z(self, gen_size=10):
+        '''
+            Randomly sample x from dataloader, feed it to encoder, generate z
+            Return z and true latent value
+            @ out_z should be a list with length equals gen_size, each object has 
+            size B*z_dim
+            @ out_y should be a list with length equals gen_size, each object has
+            size B*6
+        '''
+        self.net_mode(train=False)
+        out = False
+        gen_cnt = 0
+        #pbar = tqdm(total=gen_size)
+        #pbar.update(gen_cnt)
+        out_z = []
+        out_y = []
+        out_x = []
         
+        while not out:
+            for x,y in self.data_loader:
+                out_y.append(y.squeeze(1)[:,1:])
+                out_x.append(x)
+                #pbar.update(1)
+                gen_cnt += 1
+                x = Variable(cuda(x.float(), self.use_cuda))
+                out_distri = self.net.encoder(x).data
+                mu = out_distri[:, :self.z_dim]
+                logvar = out_distri[:, self.z_dim:]    
+                out_z.append(reparametrize(mu, logvar))           
+                if gen_cnt >= gen_size:
+                    out = True
+                    break
+        self.net_mode(train=True)
+        return out_z, out_y, out_x
 
     def save_gif(self, limit=3, inter=2/3, loc=-1):
         self.net_mode(train=False)

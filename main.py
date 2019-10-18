@@ -27,7 +27,7 @@ def main(args):
     np.random.seed(seed)
 
     net = Solver(args)
-    net.train()
+    net.iterated_learning()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='toy Beta-VAE')
@@ -35,7 +35,8 @@ if __name__ == "__main__":
     parser.add_argument('--train', default=True, type=str2bool, help='train or traverse')
     parser.add_argument('--seed', default=1, type=int, help='random seed')
     parser.add_argument('--cuda', default=True, type=str2bool, help='enable cuda')
-    parser.add_argument('--max_iter', default=1.5e6, type=float, help='maximum training iteration')
+    parser.add_argument('--max_iter_per_gen', default=100, type=float, help='maximum training iteration per generation')
+    parser.add_argument('--max_gen', default=10, type=float, help='number of generations')
     parser.add_argument('--batch_size', default=64, type=int, help='batch size')
 
     parser.add_argument('--z_dim', default=10, type=int, help='dimension of the representation z')
@@ -43,6 +44,10 @@ if __name__ == "__main__":
     parser.add_argument('--lr', default=1e-4, type=float, help='learning rate')
     parser.add_argument('--beta1', default=0.9, type=float, help='Adam optimizer beta1')
     parser.add_argument('--beta2', default=0.999, type=float, help='Adam optimizer beta2')
+
+    parser.add_argument('--nb_preENDE', default=10, type=int, help='Number of batches for pre-train encoder and decoder')
+    parser.add_argument('--niter_preEN', default=20, type=int, help='Number of max iterations for pre-train encoder')
+    parser.add_argument('--niter_preDE', default=20, type=int, help='Number of max iterations for pre-train decoder')
 
     parser.add_argument('--dset_dir', default='data', type=str, help='dataset directory')
     parser.add_argument('--image_size', default=64, type=int, help='image size. now only (64,64) is supported')
@@ -59,17 +64,27 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
 
-    main(args)
+#    main(args)
 
-    #seed = args.seed
-    #torch.manual_seed(seed)
-    #torch.cuda.manual_seed(seed)
-    #np.random.seed(seed)
+    seed = args.seed
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    np.random.seed(seed)
 
-    #net = Solver(args)
+    net = Solver(args)
+    net.iterated_learning()
+
+
+#    net = Solver(args)
+#    net.net_mode(False)
+#    out_z, _, out_x = net.gen_z(gen_size=args.nb_preENDE)
+#    net.net_mode(True)
+#    loss_table_DE = net.pre_train_DE(out_z, out_x)
+#    loss_table_EN = net.pre_train_EN(out_z, out_x)
+    
     #net.train()
     #net.load_checkpoint('last')
-    #out_z,out_y = net.gen_z(10000)
+    #out_z,out_y = net.gen_z(10)
 
 
 

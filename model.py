@@ -64,6 +64,14 @@ class BetaVAE_H(nn.Module):
         for block in self._modules:
             for m in self._modules[block]:
                 kaiming_init(m)
+                
+    def encoder_init(self):
+        for m in self._modules['encoder']:
+            kaiming_init(m)
+    
+    def decoder_init(self):
+        for m in self._modules['decoder']:
+            kaiming_init(m)
 
     def forward(self, x):
         distributions = self._encode(x)
@@ -84,7 +92,7 @@ class BetaVAE_H(nn.Module):
 
 def kaiming_init(m):
     if isinstance(m, (nn.Linear, nn.Conv2d)):
-        init.kaiming_normal(m.weight)
+        init.kaiming_normal_(m.weight)
         if m.bias is not None:
             m.bias.data.fill_(0)
     elif isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d)):
@@ -105,4 +113,5 @@ def normal_init(m, mean, std):
 
 
 if __name__ == '__main__':
-    pass
+    net = BetaVAE_H()
+    net.weight_init()
