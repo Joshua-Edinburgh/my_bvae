@@ -138,7 +138,7 @@ class Solver(object):
     def iterated_learning(self):
         out_z = []
         out_x = []
-        for gen_idx in range(self.max_gen):
+        for gen_idx in range(int(self.max_gen)):
               
             print('\n======= This is generation{:>2d}/{:>2d}  ======'.format(gen_idx+1,self.max_gen))
             if gen_idx != 0:
@@ -238,12 +238,14 @@ class Solver(object):
 
         pbar = tqdm(total=self.max_iter_per_gen)
         pbar.update(self.global_iter)
+        local_iter = 0
         with open(self.metric_dir+'/results.txt','a') as f:
             f.write('====== Experiment name: '+self.exp_name+'==============\n')
             
         while not out:
             for x,y in self.data_loader:
                 self.global_iter += 1
+                local_iter += 1
                 pbar.update(1)
 
                 x = Variable(cuda(x.float(), self.use_cuda))
@@ -272,7 +274,7 @@ class Solver(object):
                         f.write('\n [{:0>7d}] \t loss:{:.3f} \t corr:{:.3f} \t dise:{:.3f} \t comp:{:.3f}\t info:{:.3f}'.format(
                                 self.global_iter, recon_loss.data.item(), corr, dist[-1], comp[-1],info[-1]))
                     #print('======================================')
-                if self.global_iter%self.save_step == 0:
+                if self.global_iter%self.save_step == 1:
                     self.save_checkpoint('last')
                     #pbar.write('Saved checkpoint(iter:{})'.format(self.global_iter))
                     if self.save_gifs:
@@ -281,7 +283,7 @@ class Solver(object):
                 if self.global_iter%50000 == 0:
                     self.save_checkpoint(str(self.global_iter))
 
-                if self.global_iter >= self.max_iter_per_gen:
+                if local_iter >= self.max_iter_per_gen:
                     out = True
                     break
                 

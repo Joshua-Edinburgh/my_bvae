@@ -117,7 +117,7 @@ class Metric_R:
             model.fit(z_upk,y_upk[:,i])     # X is all z, y is one colunm
             
             y_pred = model.predict(z_upk)
-            errs[i] = err_fn(y_pred, y_upk.numpy())
+            errs[i] = err_fn(y_pred, y_upk[:,i].numpy())
             r = getattr(model, attr)[:,None]    # Should be z_dim*1
             R.append(np.abs(r))
         R = np.hstack(R)
@@ -178,7 +178,7 @@ class Metric_topsim:
     def __init__(self,args):
         self.b_siz = args.batch_size
         self.smp_flag = False   # When z,y is too large, use True, we may sample
-        self.smp_size = 1e6     # The number of sampled pairs
+        self.smp_size = 1e5     # The number of sampled pairs
         self.z_metr = 'EU'
         self.y_metr = 'EU'
         self.x_metr = 'XEU'
@@ -272,15 +272,15 @@ if __name__ == "__main__":
 
     # ========== Test for Metric_topsim ================
     # ====== Must run dataset.py to prepare variable: dataset_zip
-    metric_topsim = Metric_topsim(args)
-    corr = metric_topsim.top_sim_zy(out_z,out_y)
-    print('Topsim between z and y is: %.4f'%corr)
+    #metric_topsim = Metric_topsim(args)
+    #corr = metric_topsim.top_sim_zy(out_z,out_y)
+    #print('Topsim between z and y is: %.4f'%corr)
     #out_x = ys_to_xbool_dsprite(out_y,args,dataset_zip)
     #corrX_Y = metric_topsim.top_sim_xzoy(out_y,out_x)
     #print('Topsim between y and X is: %.4f'%corrX_Y)
     # ========== Test for Metric_R ================
-    #metric_R = Metric_R(args)
-    #a1, b1, c1, R1 = metric_R.dise_comp_info(out_z,out_y,'lasso')
+    metric_R = Metric_R(args)
+    a1, b1, c1, R1 = metric_R.dise_comp_info(out_z,out_y,'lasso')
     #a2, b2, c2, R2 = metric_R.dise_comp_info(out_z,out_y,'random_forest')
     #model_list = ['Base-Lasso','Base-RF']
     #metric_R.hinton_fig([R1,R2], model_list)
