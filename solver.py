@@ -10,16 +10,17 @@ warnings.filterwarnings("ignore")
 
 import os
 from tqdm import tqdm
-import visdom
 
+import numpy as np
 import torch
 import torch.optim as optim
 import torch.nn.functional as F
 from torch.autograd import Variable
+from torchvision.utils import save_image
 
-from utils.basic import cuda
+from utils.basic import cuda, grid2gif
 from model import BetaVAE_H
-from utils.dataset import return_data, ys_to_png_dsprite
+from utils.dataset import return_data
 from metrics import Metric_R, Metric_topsim
 
 def reconstruction_loss(x, x_recon, distribution):
@@ -101,10 +102,21 @@ class Solver(object):
         self.ckpt_name = args.ckpt_name
         if self.ckpt_name is not None:
             self.load_checkpoint(self.ckpt_name)
+            
+        self.metric_dir = os.path.join('exp_results/'+args.exp_name+'/metrics')
+        if not os.path.exists(self.metric_dir):
+            os.makedirs(self.metric_dir)
 
-        self.gather_step = args.gather_step
-        self.display_step = args.display_step
+        self.imgs_dir = os.path.join('exp_results/'+args.exp_name+'/images')
+        if not os.path.exists(self.imgs_dir):
+            os.makedirs(self.imgs_dir)
+            
         self.save_step = args.save_step
+        self.metric_step = args.metric_step
+        self.metric_topsim = Metric_topsim(args)
+        self.top_sim_batches = args.top_sim_batches
+        self.metric_R = Metric_R(args)
+        self.save_gifs = args.save_gifs
 
         self.dset_dir = args.dset_dir
         self.batch_size = args.batch_size
@@ -112,14 +124,54 @@ class Solver(object):
 
         self.gather = DataGather()      
 
-
+    def gen_z(self, gen_size=10):
+        '''
+            Randomly sample x from dataloader, feed it to encoder, generate z
+            Return z and true latent value
+            @ out_z should be a list with length equals gen_size, each object has 
+            size B*z_dim
+            @ out_y should be a list with length equals gen_size, each object has
+            size B*6
+        '''
+        self.net_mode(train=False)
+        out = False
+        gen_cnt = 0
+        #pbar = tqdm(total=gen_size)
+        #pbar.update(gen_cnt)
+        out_z = []
+        out_y = []
+        
+        while not out:
+            for x,y in self.data_loader:
+                #pbar.update(1)
+                gen_cnt += 1
+                x = Variable(cuda(x.float(), self.use_cuda))
+                out_z.append(self.net.encoder(x).data)
+                out_y.append(y.squeeze(1)[:,1:])
+                if gen_cnt >= gen_size:
+                    out = True
+                    break
+        self.net_mode(train=True)
+        return out_z, out_y
+    
     def train(self):
         self.net_mode(train=True)
         #self.C_max = Variable(cuda(torch.FloatTensor([self.C_max]), self.use_cuda))
         out = False
+        
+        indx_list = []
+        loss_list = []
+        corr_list = []
+        dist_list = []
+        comp_list = []
+        info_list = []
+        R_list = []
 
         pbar = tqdm(total=self.max_iter)
         pbar.update(self.global_iter)
+        with open(self.metric_dir+'/results.txt','a') as f:
+            f.write('====== Experiment name: '+self.exp_name+'==============\n')
+            
         while not out:
             for x,y in self.data_loader:
                 self.global_iter += 1
@@ -135,19 +187,27 @@ class Solver(object):
                 beta_vae_loss.backward()
                 self.optim.step()
 
-                if self.global_iter%self.display_step == 0:
-                    pbar.write('[{}] recon_loss:{:.3f} total_kld:{:.3f} mean_kld:{:.3f}'.format(
-                        self.global_iter, recon_loss.data[0], total_kld.data[0], mean_kld.data[0]))
-
-                    var = logvar.exp().mean(0).data
-                    var_str = ''
-                    for j, var_j in enumerate(var):
-                        var_str += 'var{}:{:.4f} '.format(j+1, var_j)
-                    pbar.write(var_str)
-                    
+                if self.global_iter%self.metric_step == 0:
+                    out_z,out_y = self.gen_z(self.top_sim_batches)
+                    corr = self.metric_topsim.top_sim_zy(out_z[:20],out_y[:20])
+                    dist, comp, info, R = self.metric_R.dise_comp_info(out_z,out_y,'random_forest')
+                    indx_list.append(self.global_iter)
+                    loss_list.append(recon_loss.data.item())
+                    corr_list.append(corr)
+                    dist_list.append(dist)
+                    comp_list.append(comp)
+                    info_list.append(info)
+                    R_list.append(R)
+                    #print('======================================')
+                    with open(self.metric_dir+'/results.txt','a') as f:
+                        f.write('\n [{:0>7d}] \t loss:{:.3f} \t corr:{:.3f} \t dise:{:.3f} \t comp:{:.3f}\t info:{:.3f}'.format(
+                                self.global_iter, recon_loss.data.item(), corr, dist[-1], comp[-1],info[-1]))
+                    #print('======================================')
                 if self.global_iter%self.save_step == 0:
                     self.save_checkpoint('last')
-                    pbar.write('Saved checkpoint(iter:{})'.format(self.global_iter))
+                    #pbar.write('Saved checkpoint(iter:{})'.format(self.global_iter))
+                    if self.save_gifs:
+                        self.save_gif()
 
                 if self.global_iter%50000 == 0:
                     self.save_checkpoint(str(self.global_iter))
@@ -155,38 +215,79 @@ class Solver(object):
                 if self.global_iter >= self.max_iter:
                     out = True
                     break
-
+                
+        np.savez(self.metric_dir+'/metrics.npz',
+                 indx = np.asarray(indx_list),       # (len,)
+                 loss = np.asarray(loss_list),       # (len,)
+                 corr = np.asarray(corr_list),       # (len,)
+                 dist = np.asarray(dist_list),       # (len, z_dim+1)
+                 comp = np.asarray(comp_list),       # (len, y_dim+1)
+                 info = np.asarray(info_list),       # (len, y_dim+1)
+                 R = np.asarray(R_list))             # (len, z_dim, y_dim)
         pbar.write("[Training Finished]")
         pbar.close()
+        
 
-    def gen_z(self, gen_size=10):
-        '''
-            Randomly sample x from dataloader, feed it to encoder, generate z
-            Return z and true latent value
-            @ out_z should be a list with length equals gen_size, each object has 
-            size B*z_dim
-            @ out_y should be a list with length equals gen_size, each object has
-            size B*6
-        '''
-        out = False
-        gen_cnt = 0
-        pbar = tqdm(total=gen_size)
-        pbar.update(gen_cnt)
-        out_z = []
-        out_y = []
+    def save_gif(self, limit=3, inter=2/3, loc=-1):
+        self.net_mode(train=False)
+        import random
+        decoder = self.net.decoder
+        encoder = self.net.encoder
+        interpolation = torch.arange(-limit, limit+0.1, inter)
+        n_dsets = len(self.data_loader.dataset)        
+        rand_idx = random.randint(1, n_dsets-1)
         
-        while not out:
-            for x,y in self.data_loader:
-                pbar.update(1)
-                gen_cnt += 1
-                x = Variable(cuda(x.float(), self.use_cuda))
-                out_z.append(self.net.encoder(x).data)
-                out_y.append(y.squeeze(1)[:,1:])
-                if gen_cnt >= gen_size:
-                    out = True
-                    break
-        return out_z, out_y
+        random_img, _ = self.data_loader.dataset.__getitem__(rand_idx)
+        random_img = Variable(cuda(random_img.float(), self.use_cuda), volatile=True).unsqueeze(0)
+        random_img_z = encoder(random_img)[:, :self.z_dim]  
         
+        fixed_idx1 = 87040 # square
+        fixed_idx2 = 332800 # ellipse
+        fixed_idx3 = 578560 # heart
+
+        fixed_img1, _ = self.data_loader.dataset.__getitem__(fixed_idx1)
+        fixed_img1 = Variable(cuda(fixed_img1.float(), self.use_cuda), volatile=True).unsqueeze(0)
+        fixed_img_z1 = encoder(fixed_img1)[:, :self.z_dim]
+
+        fixed_img2, _ = self.data_loader.dataset.__getitem__(fixed_idx2)
+        fixed_img2 = Variable(cuda(fixed_img2.float(), self.use_cuda), volatile=True).unsqueeze(0)
+        fixed_img_z2 = encoder(fixed_img2)[:, :self.z_dim]
+
+        fixed_img3, _ = self.data_loader.dataset.__getitem__(fixed_idx3)
+        fixed_img3 = Variable(cuda(fixed_img3.float(), self.use_cuda), volatile=True).unsqueeze(0)
+        fixed_img_z3 = encoder(fixed_img3)[:, :self.z_dim]
+
+        Z = {'fixed_square':fixed_img_z1, 'fixed_ellipse':fixed_img_z2,
+             'fixed_heart':fixed_img_z3, 'random_img':random_img_z}
+
+        gifs = []
+        for key in Z.keys():
+            z_ori = Z[key]
+            samples = []
+            for row in range(self.z_dim):
+                if loc != -1 and row != loc:
+                    continue
+                z = z_ori.clone()
+                for val in interpolation:
+                    z[:, row] = val
+                    sample = F.sigmoid(decoder(z)).data
+                    samples.append(sample)
+                    gifs.append(sample)
+            samples = torch.cat(samples, dim=0).cpu()
+
+        output_dir = os.path.join(self.imgs_dir, str(self.global_iter))
+        os.makedirs(output_dir, exist_ok=True)
+        gifs = torch.cat(gifs)
+        gifs = gifs.view(len(Z), self.z_dim, len(interpolation), self.nc, 64, 64).transpose(1, 2)
+        for i, key in enumerate(Z.keys()):
+            for j, val in enumerate(interpolation):
+                save_image(tensor=gifs[i][j].cpu(),
+                           filename=os.path.join(output_dir, '{}_{}.jpg'.format(key, j)),
+                           nrow=self.z_dim, pad_value=1)
+
+            grid2gif(os.path.join(output_dir, key+'*.jpg'),
+                     os.path.join(output_dir, key+'.gif'), delay=10)    
+        self.net_mode(train=True)
         
     def net_mode(self, train):
         if not isinstance(train, bool):

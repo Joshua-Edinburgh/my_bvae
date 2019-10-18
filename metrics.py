@@ -86,9 +86,9 @@ class Metric_R:
         self.y_dim = 5
         self.z_dim = args.z_dim
         self.seed = args.seed
-        self.save_path = os.path.join('exp_results/'+args.exp_name+'/metrics')
-        if not os.path.exists(self.save_path):
-            os.makedirs(self.save_path)
+        self.metric_dir = os.path.join('exp_results/'+args.exp_name+'/metrics')
+        if not os.path.exists(self.metric_dir):
+            os.makedirs(self.metric_dir)
         
     def norm_entropy(self,p):
         '''p: probabilities '''
@@ -105,6 +105,10 @@ class Metric_R:
     def fit_get_scores(self, z_list, y_list, reg_model, reg_paras, err_fn, attr):
         z_upk = unpack_batch_zoy(z_list)  # x_upk has shape B*x_dim
         y_upk = unpack_batch_zoy(y_list)
+        if z_upk.is_cuda:
+            z_upk = z_upk.cpu()
+        if y_upk.is_cuda:
+            y_upk = y_upk.cpu()        
         R = []
         errs = np.zeros((self.y_dim+1))     # The last store the average
         
@@ -165,7 +169,7 @@ class Metric_R:
             axes[i].set_title('{0}'.format(model_list[i]), fontsize=20)
             part_name += '_'
             part_name += model_list[i].lower()            
-        fig_name = self.save_path+'/hinton'+part_name+'.pdf'
+        fig_name = self.metric_dir+'/hinton'+part_name+'.pdf'
         fig.savefig(fig_name)
 
 
@@ -173,11 +177,11 @@ class Metric_R:
 class Metric_topsim:
     def __init__(self,args):
         self.b_siz = args.batch_size
-        self.smp_flag = True   # When z,y is too large, use True, we may sample
+        self.smp_flag = False   # When z,y is too large, use True, we may sample
         self.smp_size = 1e6     # The number of sampled pairs
-        self.z_metr = 'cosine'
-        self.y_metr = 'cosine'
-        self.x_metr = 'Xcosine'
+        self.z_metr = 'EU'
+        self.y_metr = 'EU'
+        self.x_metr = 'XEU'
         
     def tensor_dist(self,tens1,tens2,dist_type='cosine'):
         if dist_type == 'cosine':
@@ -222,8 +226,7 @@ class Metric_topsim:
                 for j in range(i):
                     if i!=j:
                         z_dist.append(self.tensor_dist(z_upk[i],z_upk[j],self.z_metr))
-                        y_dist.append(self.tensor_dist(y_upk[i],y_upk[j],self.y_metr))
-        print('dis_zy_done')              
+                        y_dist.append(self.tensor_dist(y_upk[i],y_upk[j],self.y_metr))            
         dist_table = pd.DataFrame({'ZD':np.asarray(z_dist),
                                    'YD':np.asarray(y_dist)})
         corr_pearson = dist_table.corr()['ZD']['YD']            
