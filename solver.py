@@ -81,6 +81,7 @@ class Solver(object):
         self.max_iter_per_gen = args.max_iter_per_gen
         self.max_gen = args.max_gen
         self.global_iter = 0
+        self.global_gen = 0
 
         self.z_dim = args.z_dim
         self.beta = args.beta
@@ -139,7 +140,7 @@ class Solver(object):
         out_z = []
         out_x = []
         for gen_idx in range(int(self.max_gen)):
-              
+            self.global_gen += 1
             print('\n======= This is generation{:>2d}/{:>2d}  ======'.format(gen_idx+1,self.max_gen))
             if gen_idx != 0:
                 print('------ Pretraining Encoder {:>2d}/{:>2d} ------'.format(gen_idx+1,self.max_gen))
@@ -237,7 +238,7 @@ class Solver(object):
         R_list = []
 
         pbar = tqdm(total=self.max_iter_per_gen)
-        pbar.update(self.global_iter)
+        pbar.update(0)
         local_iter = 0
         with open(self.metric_dir+'/results.txt','a') as f:
             f.write('====== Experiment name: '+self.exp_name+'==============\n')
@@ -287,7 +288,7 @@ class Solver(object):
                     out = True
                     break
                 
-        np.savez(self.metric_dir+'/metrics.npz',
+        np.savez(self.metric_dir+'/metrics_gen/'+str(self.global_gen)+'.npz',
                  indx = np.asarray(indx_list),       # (len,)
                  loss = np.asarray(loss_list),       # (len,)
                  corr = np.asarray(corr_list),       # (len,)
