@@ -236,6 +236,8 @@ class Solver(object):
         comp_list = []
         info_list = []
         R_list = []
+        recon_loss_list = []
+        bvae_loss_list = []
 
         pbar = tqdm(total=self.max_iter_per_gen)
         pbar.update(0)
@@ -254,7 +256,10 @@ class Solver(object):
                 recon_loss = reconstruction_loss(x, x_recon, self.decoder_dist)
                 total_kld, dim_wise_kld, mean_kld = kl_divergence(mu, logvar)
                 beta_vae_loss = recon_loss + self.beta*total_kld
-
+                
+                recon_loss_list.append()
+                bvae_loss_list.append()
+                
                 self.optim.zero_grad()
                 beta_vae_loss.backward()
                 self.optim.step()

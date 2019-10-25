@@ -27,7 +27,8 @@ def main(args):
     np.random.seed(seed)
 
     net = Solver(args)
-    net.iterated_learning()
+    #net.iterated_learning()
+    net.interact_train()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='toy Beta-VAE')
