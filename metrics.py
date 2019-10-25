@@ -69,12 +69,22 @@ def nrmse(predicted, target):
     ''' normalized root mean square error '''
     return rmse(predicted, target) / np.std(target)
 
-def unpack_batch_zoy(zoy_list):
-    zoy_dim = zoy_list[0].shape[-1]
-    zoy_upk = torch.stack(zoy_list).view(-1,zoy_dim)
-    return zoy_upk
+def unpack_batch_y(y_list):
+    # ==== The shape of y_list[0] should be [B,z_dim]
+    y_dim = y_list[0].shape[-1]
+    y_upk = torch.stack(y_list).view(-1,y_dim)
+    return y_upk
 
-def upack_batch_x(x_list):
+def unpack_batch_z(z_list):
+    # ==== The shape of z_list[0] should be [B,z_dim,a_dim]
+    z_upk = []
+    z_dim = z_list[0].shape[1]
+    for z in z_list:
+        z_upk.append(z.argmax(-1))
+    z_upk = torch.stack(z_upk).view(-1,z_dim)
+    return z_upk
+
+def unpack_batch_x(x_list):
     x_tensor_list = []
     for x in x_list:
         x_tensor_list.append(torch.from_numpy(x))
@@ -103,8 +113,8 @@ class Metric_R:
         return hs
 
     def fit_get_scores(self, z_list, y_list, reg_model, reg_paras, err_fn, attr):
-        z_upk = unpack_batch_zoy(z_list)  # x_upk has shape B*x_dim
-        y_upk = unpack_batch_zoy(y_list)
+        z_upk = unpack_batch_z(z_list)  # x_upk has shape B*x_dim
+        y_upk = unpack_batch_y(y_list)
         if z_upk.is_cuda:
             z_upk = z_upk.cpu()
         if y_upk.is_cuda:
@@ -137,7 +147,6 @@ class Metric_R:
         return disent_scores, complete_scores, info_scores, R
     
     def dise_comp_info(self, z_list, y_list, reg_model='lasso', show_fig=False):
-        
         if reg_model.lower() == 'lasso':
             reg_paras = [{"alpha": 0.02}] * self.y_dim         
             disent_scores, complete_scores, info_scores, R = \
@@ -151,8 +160,7 @@ class Metric_R:
                                   "max_depth":y_max_depth, 
                                   "random_state": rng})
             disent_scores, complete_scores, info_scores, R = \
-                self.fit_get_scores(z_list,y_list,RandomForestRegressor,
-                                    reg_paras,nrmse,'feature_importances_')              
+                self.fit_get_scores(z_list,y_list,RandomForestRegressor, reg_paras,nrmse,'feature_importances_')              
         else:
             raise('Only "lasso or random_forest"')
           
@@ -185,11 +193,11 @@ class Metric_topsim:
         
     def tensor_dist(self,tens1,tens2,dist_type='cosine'):
         if dist_type == 'cosine':
-            return cos_dist(tens1,tens2)
+            return cos_dist(tens1.float(),tens2.float())
         if dist_type == 'edit':
-            return edit_dist(tens1,tens2)
+            return edit_dist(tens1.float(),tens2.float())
         if dist_type == 'EU':
-            return euclidean_dist(tens1,tens2,p=2)
+            return euclidean_dist(tens1.float(),tens2.float(),p=2)
         if dist_type == 'XEU':
             return euclidean_dist(tens1.view(-1).float(),tens2.view(-1).float(),p=2)
         if dist_type == 'Xcosine':
@@ -198,8 +206,8 @@ class Metric_topsim:
             raise NotImplementedError
         
     def top_sim_zy(self, z_list, y_list):
-        z_upk = unpack_batch_zoy(z_list)  # x_upk has shape B*x_dim
-        y_upk = unpack_batch_zoy(y_list)
+        z_upk = unpack_batch_z(z_list)  # x_upk has shape B*x_dim
+        y_upk = unpack_batch_y(y_list)
         if z_upk.is_cuda:
             z_upk = z_upk.cpu()
         if y_upk.is_cuda:
@@ -232,9 +240,9 @@ class Metric_topsim:
         corr_pearson = dist_table.corr()['ZD']['YD']            
         return corr_pearson
     
-    def top_sim_xzoy(self, zoy_list, x_list):
-        zoy_upk = unpack_batch_zoy(zoy_list)        # To [lis*b_size,zoy_dim]
-        x_upk = upack_batch_x(x_list)               # To [lis*b_size,64,64]
+    def top_sim_xz(self, z_list, x_list):
+        z_upk = unpack_batch_z(z_list)        # To [lis*b_size,zoy_dim]
+        x_upk = unpack_batch_x(x_list)               # To [lis*b_size,64,64]
         if zoy_upk.is_cuda:
             zoy_upk = zoy_upk.cpu()
         if x_upk.is_cuda:

@@ -69,7 +69,8 @@ def return_data(args):
     data = np.load(root, allow_pickle=True, encoding='bytes')
     imgs = torch.from_numpy(data['imgs']).unsqueeze(1)
     vals = torch.from_numpy(data['latents_values']).unsqueeze(1)
-    data_set = Data.TensorDataset(imgs,vals)
+    clas = torch.from_numpy(data['latents_classes']).unsqueeze(1)
+    data_set = Data.TensorDataset(imgs,vals,clas)
 
     train_loader = Data.DataLoader(
                               dataset = data_set,

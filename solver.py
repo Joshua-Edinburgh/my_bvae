@@ -20,9 +20,10 @@ from torch.autograd import Variable
 from torchvision.utils import save_image
 
 from utils.basic import cuda, grid2gif
-from model import BetaVAE_H, reparametrize
+from model import BetaVAE_H, IVAE, reparametrize
 from utils.dataset import return_data
 from metrics import Metric_R, Metric_topsim
+from torch.distributions.one_hot_categorical import OneHotCategorical
 
 def reconstruction_loss(x, x_recon, distribution):
     batch_size = x.size(0)
@@ -75,7 +76,7 @@ class DataGather(object):
         self.data = self.get_empty_data_dict()
         
 
-class Solver(object):
+class IVAE_Solver(object):
     def __init__(self, args):
         self.use_cuda = args.cuda and torch.cuda.is_available()
         self.max_iter_per_gen = args.max_iter_per_gen
@@ -84,6 +85,7 @@ class Solver(object):
         self.global_gen = 0
 
         self.z_dim = args.z_dim
+        self.a_dim = args.a_dim
         self.beta = args.beta
         self.lr = args.lr
         self.beta1 = args.beta1
@@ -96,9 +98,9 @@ class Solver(object):
         self.nc = 1
         self.decoder_dist = 'bernoulli'
         
-        net = BetaVAE_H
+        net = IVAE
 
-        self.net = cuda(net(self.z_dim, self.nc), self.use_cuda)
+        self.net = cuda(net(self.z_dim, self.nc, self.a_dim), self.use_cuda)
         self.optim = optim.Adam(self.net.parameters(), lr=self.lr,
                                     betas=(self.beta1, self.beta2))
         self.optim_EN = optim.Adam(self.net.parameters(), lr=self.lr,
@@ -146,13 +148,13 @@ class Solver(object):
                 print('------ Pretraining Encoder {:>2d}/{:>2d} ------'.format(gen_idx+1,self.max_gen))
                 sys.stdout.flush()
                 self.net.encoder_init()
-                self.pre_train_EN(out_z, out_x)
+                loss_table1 = self.pre_train_EN(out_z, out_x)
                          
             if gen_idx != 0:
                 print('------ Pretraining Decoder {:>2d}/{:>2d} ------'.format(gen_idx+1,self.max_gen))
                 sys.stdout.flush() 
                 self.net.decoder_init()
-                self.pre_train_DE(out_z, out_x)
+                loss_table2 = self.pre_train_DE(out_z, out_x)
                
             print('------ Interactive Training {:>2d}/{:>2d} -----'.format(gen_idx+1,self.max_gen))
             sys.stdout.flush()
@@ -168,17 +170,19 @@ class Solver(object):
         pre_EN_cnt = 0
         pbar = tqdm(total=self.niter_preEN)
         pbar.update(pre_EN_cnt)
-        loss_fun = torch.nn.MSELoss()
+        loss_fun = torch.nn.CrossEntropyLoss()
         loss_table = []
         while not out:  
-            for z,x in zip(out_z,out_x):  
+            for z,x in zip(out_z,out_x): 
+                loss = 0
                 x = Variable(cuda(x.float(), self.use_cuda))
-                z = Variable(cuda(z.float(), self.use_cuda))
-                distributions = self.net._encode(x)
-                mu = distributions[:, :self.z_dim]
-                logvar = distributions[:, self.z_dim:]
-                z_hat = reparametrize(mu, logvar)    
-                loss = loss_fun(z_hat,z)
+                z_matrix = Variable(cuda(z.long(), self.use_cuda))
+                z_hat_matrix = self.net._encode(x)
+                for i in range(self.z_dim):
+                    z_hat = z_hat_matrix[:,i,:]    
+                    z_tgt = z_matrix[:,i]
+                    loss += loss_fun(z_hat,z_tgt.argmax(-1))
+                    
                 loss_table.append(loss.data.item())
                 
                 self.optim_EN.zero_grad()
@@ -236,32 +240,35 @@ class Solver(object):
         comp_list = []
         info_list = []
         R_list = []
+        
+        loss_list = []
 
         pbar = tqdm(total=self.max_iter_per_gen)
         pbar.update(0)
         local_iter = 0
         with open(self.metric_dir+'/results.txt','a') as f:
-            f.write('====== Experiment name: '+self.exp_name+'==============\n')
+            f.write('\n====== Experiment name: '+self.exp_name+'==============')
             
         while not out:
-            for x,y in self.data_loader:
+            for x,y,yc in self.data_loader:
                 self.global_iter += 1
                 local_iter += 1
                 pbar.update(1)
 
                 x = Variable(cuda(x.float(), self.use_cuda))
-                x_recon, mu, logvar = self.net(x)
+                x_recon = self.net(x)
                 recon_loss = reconstruction_loss(x, x_recon, self.decoder_dist)
-                total_kld, dim_wise_kld, mean_kld = kl_divergence(mu, logvar)
-                beta_vae_loss = recon_loss + self.beta*total_kld
+                loss_list.append(recon_loss.data.item())
+#                total_kld, dim_wise_kld, mean_kld = kl_divergence(mu, logvar)
+#                beta_vae_loss = recon_loss + self.beta*total_kld
 
                 self.optim.zero_grad()
-                beta_vae_loss.backward()
+                recon_loss.backward()
                 self.optim.step()
 
                 if self.global_iter%self.metric_step == 0:
                     out_z,out_y, _ = self.gen_z(self.top_sim_batches)
-                    corr = self.metric_topsim.top_sim_zy(out_z[:20],out_y[:20])
+                    corr = self.metric_topsim.top_sim_zy(out_z[:10],out_y[:10])
                     dist, comp, info, R = self.metric_R.dise_comp_info(out_z,out_y,'random_forest')
                     indx_list.append(self.global_iter)
                     loss_list.append(recon_loss.data.item())
@@ -275,7 +282,7 @@ class Solver(object):
                         f.write('\n [{:0>7d}] \t loss:{:.3f} \t corr:{:.3f} \t dise:{:.3f} \t comp:{:.3f}\t info:{:.3f}'.format(
                                 self.global_iter, recon_loss.data.item(), corr, dist[-1], comp[-1],info[-1]))
                     #print('======================================')
-                if self.global_iter%self.save_step == 1:
+                if self.global_iter%self.save_step == 0:
                     self.save_checkpoint('last')
                     #pbar.write('Saved checkpoint(iter:{})'.format(self.global_iter))
                     if self.save_gifs:
@@ -288,7 +295,7 @@ class Solver(object):
                     out = True
                     break
                 
-        np.savez(self.metric_dir+'/metrics_gen/'+str(self.global_gen)+'.npz',
+        np.savez(self.metric_dir+'/metrics_gen'+str(self.global_gen)+'.npz',
                  indx = np.asarray(indx_list),       # (len,)
                  loss = np.asarray(loss_list),       # (len,)
                  corr = np.asarray(corr_list),       # (len,)
@@ -299,36 +306,32 @@ class Solver(object):
         pbar.write("[Training Finished]")
         pbar.close()
         sys.stdout.flush()  
-
+        return loss_list
     def gen_z(self, gen_size=10):
         '''
             Randomly sample x from dataloader, feed it to encoder, generate z
             Return z and true latent value
             @ out_z should be a list with length equals gen_size, each object has 
-            size B*z_dim
+            size B*z_dim*a_dim
             @ out_y should be a list with length equals gen_size, each object has
             size B*6
         '''
         self.net_mode(train=False)
         out = False
         gen_cnt = 0
-        #pbar = tqdm(total=gen_size)
-        #pbar.update(gen_cnt)
-        out_z = []
+        out_z = []          # One hot shape [B,z_dim,a_dim], sampled
         out_y = []
         out_x = []
         
         while not out:
-            for x,y in self.data_loader:
-                out_y.append(y.squeeze(1)[:,1:])
+            for x,y,yc in self.data_loader:
+                out_y.append(yc.squeeze(1)[:,1:])
                 out_x.append(x)
-                #pbar.update(1)
                 gen_cnt += 1
                 x = Variable(cuda(x.float(), self.use_cuda))
-                out_distri = self.net.encoder(x).data
-                mu = out_distri[:, :self.z_dim]
-                logvar = out_distri[:, self.z_dim:]    
-                out_z.append(reparametrize(mu, logvar))           
+                z_matrix = self.net._encode(x).data  
+                z_prob = F.softmax(z_matrix,-1)
+                out_z.append(OneHotCategorical(probs=z_prob).sample())                         
                 if gen_cnt >= gen_size:
                     out = True
                     break
@@ -338,35 +341,34 @@ class Solver(object):
     def save_gif(self, limit=3, inter=2/3, loc=-1):
         self.net_mode(train=False)
         import random
-        decoder = self.net.decoder
-        encoder = self.net.encoder
-        interpolation = torch.arange(-limit, limit+0.1, inter)
+        interpolation = torch.from_numpy(np.arange(0,self.a_dim,1))
         n_dsets = len(self.data_loader.dataset)        
         rand_idx = random.randint(1, n_dsets-1)
         
-        random_img, _ = self.data_loader.dataset.__getitem__(rand_idx)
+        random_img, _, _ = self.data_loader.dataset.__getitem__(rand_idx)
         random_img = Variable(cuda(random_img.float(), self.use_cuda), volatile=True).unsqueeze(0)
-        random_img_z = encoder(random_img)[:, :self.z_dim]  
+        random_img_z = self.net._encode(random_img).argmax(2)
         
         fixed_idx1 = 87040 # square
         fixed_idx2 = 332800 # ellipse
         fixed_idx3 = 578560 # heart
 
-        fixed_img1, _ = self.data_loader.dataset.__getitem__(fixed_idx1)
+        fixed_img1, _, _ = self.data_loader.dataset.__getitem__(fixed_idx1)
         fixed_img1 = Variable(cuda(fixed_img1.float(), self.use_cuda), volatile=True).unsqueeze(0)
-        fixed_img_z1 = encoder(fixed_img1)[:, :self.z_dim]
+        fixed_img_z1 = self.net._encode(fixed_img1).argmax(2)
+        
 
-        fixed_img2, _ = self.data_loader.dataset.__getitem__(fixed_idx2)
+        fixed_img2, _, _= self.data_loader.dataset.__getitem__(fixed_idx2)
         fixed_img2 = Variable(cuda(fixed_img2.float(), self.use_cuda), volatile=True).unsqueeze(0)
-        fixed_img_z2 = encoder(fixed_img2)[:, :self.z_dim]
+        fixed_img_z2 = self.net._encode(fixed_img2).argmax(2)
 
-        fixed_img3, _ = self.data_loader.dataset.__getitem__(fixed_idx3)
+        fixed_img3, _, _ = self.data_loader.dataset.__getitem__(fixed_idx3)
         fixed_img3 = Variable(cuda(fixed_img3.float(), self.use_cuda), volatile=True).unsqueeze(0)
-        fixed_img_z3 = encoder(fixed_img3)[:, :self.z_dim]
+        fixed_img_z3 = self.net._encode(fixed_img3).argmax(2)
 
         Z = {'fixed_square':fixed_img_z1, 'fixed_ellipse':fixed_img_z2,
              'fixed_heart':fixed_img_z3, 'random_img':random_img_z}
-
+        zero_matrix = Variable(cuda(torch.zeros(1,self.z_dim,self.a_dim), self.use_cuda))
         gifs = []
         for key in Z.keys():
             z_ori = Z[key]
@@ -377,7 +379,8 @@ class Solver(object):
                 z = z_ori.clone()
                 for val in interpolation:
                     z[:, row] = val
-                    sample = F.sigmoid(decoder(z)).data
+                    z_onehot = zero_matrix.scatter_(2,z.unsqueeze(-1),1)
+                    sample = F.sigmoid(self.net._decode(z_onehot)).data
                     samples.append(sample)
                     gifs.append(sample)
             samples = torch.cat(samples, dim=0).cpu()
