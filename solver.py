@@ -22,7 +22,7 @@ from torchvision.utils import save_image
 from utils.basic import cuda, grid2gif
 from model import BetaVAE_H, reparametrize
 from utils.dataset import return_data
-from metrics import Metric_R, Metric_topsim
+from metrics import Metric_R, Metric_topsim, unpack_batch_x, unpack_batch_zoy
 
 def reconstruction_loss(x, x_recon, distribution):
     batch_size = x.size(0)
@@ -257,15 +257,27 @@ class Solver(object):
                 total_kld, dim_wise_kld, mean_kld = kl_divergence(mu, logvar)
                 beta_vae_loss = recon_loss + self.beta*total_kld
                 
-                recon_loss_list.append()
-                bvae_loss_list.append()
+                recon_loss_list.append(recon_loss.data.item())
+                bvae_loss_list.append(beta_vae_loss.data.item())
                 
                 self.optim.zero_grad()
                 beta_vae_loss.backward()
                 self.optim.step()
 
+                if False:#self.global_iter%(self.metric_step*5) == 0:
+                    out_fz, out_y, out_x = self.gen_z(self.top_sim_batches*10, fullz=True)
+                    fz_upk = torch.stack(out_fz).view(-1,self.z_dim*2).cpu()
+                    y_upk = torch.stack(out_y).view(-1,5).cpu()
+                    x_upk = torch.stack(out_x).view(-1,64,64).cpu()
+                    np.savez(self.metric_dir+'/saved_xyz_'+str(self.global_iter)+'.npz',
+                             out_fz = np.asarray(fz_upk),     # Here out_z is the distribution ([mu:sigma])
+                             out_y = np.asarray(y_upk),
+                             out_x = np.asarray(x_upk)
+                             )                              
+                    #test_z = np.load(os.path.join(net.metric_dir+'/saved_xyz0.npz'))
+                    
                 if self.global_iter%self.metric_step == 0:
-                    out_z,out_y, _ = self.gen_z(self.top_sim_batches)
+                    out_z, out_y, _ = self.gen_z(self.top_sim_batches)                    
                     corr = self.metric_topsim.top_sim_zy(out_z[:20],out_y[:20])
                     dist, comp, info, R = self.metric_R.dise_comp_info(out_z,out_y,'random_forest')
                     indx_list.append(self.global_iter)
@@ -275,6 +287,9 @@ class Solver(object):
                     comp_list.append(comp)
                     info_list.append(info)
                     R_list.append(R)
+                    
+                    
+                    
                     #print('======================================')
                     with open(self.metric_dir+'/results.txt','a') as f:
                         f.write('\n [{:0>7d}] \t loss:{:.3f} \t corr:{:.3f} \t dise:{:.3f} \t comp:{:.3f}\t info:{:.3f}'.format(
@@ -293,7 +308,7 @@ class Solver(object):
                     out = True
                     break
                 
-        np.savez(self.metric_dir+'/metrics_gen/'+str(self.global_gen)+'.npz',
+        np.savez(self.metric_dir+'/metrics_gen'+str(self.global_gen)+'.npz',
                  indx = np.asarray(indx_list),       # (len,)
                  loss = np.asarray(loss_list),       # (len,)
                  corr = np.asarray(corr_list),       # (len,)
@@ -304,8 +319,9 @@ class Solver(object):
         pbar.write("[Training Finished]")
         pbar.close()
         sys.stdout.flush()  
-
-    def gen_z(self, gen_size=10):
+        return recon_loss_list, bvae_loss_list
+        
+    def gen_z(self, gen_size=10, fullz=False):
         '''
             Randomly sample x from dataloader, feed it to encoder, generate z
             Return z and true latent value
@@ -322,6 +338,7 @@ class Solver(object):
         out_z = []
         out_y = []
         out_x = []
+        out_distr_list = []
         
         while not out:
             for x,y in self.data_loader:
@@ -333,12 +350,16 @@ class Solver(object):
                 out_distri = self.net.encoder(x).data
                 mu = out_distri[:, :self.z_dim]
                 logvar = out_distri[:, self.z_dim:]    
-                out_z.append(reparametrize(mu, logvar))           
+                out_z.append(reparametrize(mu, logvar))  
+                out_distr_list.append(out_distri)
                 if gen_cnt >= gen_size:
                     out = True
                     break
         self.net_mode(train=True)
-        return out_z, out_y, out_x
+        if fullz == True:
+            return out_distr_list, out_y, out_x
+        else:
+            return out_z, out_y, out_x
 
     def save_gif(self, limit=3, inter=2/3, loc=-1):
         self.net_mode(train=False)

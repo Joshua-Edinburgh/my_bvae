@@ -74,7 +74,7 @@ def unpack_batch_zoy(zoy_list):
     zoy_upk = torch.stack(zoy_list).view(-1,zoy_dim)
     return zoy_upk
 
-def upack_batch_x(x_list):
+def unpack_batch_x(x_list):
     x_tensor_list = []
     for x in x_list:
         x_tensor_list.append(torch.from_numpy(x))
@@ -234,7 +234,7 @@ class Metric_topsim:
     
     def top_sim_xzoy(self, zoy_list, x_list):
         zoy_upk = unpack_batch_zoy(zoy_list)        # To [lis*b_size,zoy_dim]
-        x_upk = upack_batch_x(x_list)               # To [lis*b_size,64,64]
+        x_upk = unpack_batch_x(x_list)               # To [lis*b_size,64,64]
         if zoy_upk.is_cuda:
             zoy_upk = zoy_upk.cpu()
         if x_upk.is_cuda:
