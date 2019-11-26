@@ -76,12 +76,9 @@ def unpack_batch_y(y_list):
     return y_upk
 
 def unpack_batch_z(z_list):
-    # ==== The shape of z_list[0] should be [B,z_dim,a_dim]
-    z_upk = []
+    # ==== The shape of z_list[0] should be [B,z_dim]
     z_dim = z_list[0].shape[1]
-    for z in z_list:
-        z_upk.append(z.argmax(-1))
-    z_upk = torch.stack(z_upk).view(-1,z_dim)
+    z_upk = torch.stack(z_list).view(-1,z_dim)
     return z_upk
 
 def unpack_batch_x(x_list):

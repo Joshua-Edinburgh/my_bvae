@@ -27,8 +27,8 @@ class View(nn.Module):
 class BetaVAE_H(nn.Module):
     """Model proposed in original beta-VAE paper(Higgins et al, ICLR, 2017)."""
 
-    def __init__(self, z_dim=10, nc=3):
-        super(BetaVAE_H, self).__init__()
+    def __init__(self, W, z_dim=10, nc=3, a_dim=40):
+        super(BetaVAE_H, self).__init__()    
         self.z_dim = z_dim
         self.nc = nc
         self.encoder = nn.Sequential(
@@ -84,6 +84,12 @@ class BetaVAE_H(nn.Module):
 
         return x_recon, mu, logvar
 
+    def fd_gen_z(self, x):
+        distributions = self._encode(x)
+        mu = distributions[:, :self.z_dim]
+        z = mu
+        return z.data
+
     def _encode(self, x):
         return self.encoder(x)
 
@@ -91,10 +97,14 @@ class BetaVAE_H(nn.Module):
         return self.decoder(z)
 
 class IVAE(nn.Module):
-    """Model proposed in original beta-VAE paper(Higgins et al, ICLR, 2017)."""
+    """Our VAE structure, with mu(X) discrete.
+        The mapping matrix W must feeded in cuda() type
+    """
 
-    def __init__(self, z_dim=10, nc=3,a_dim=40):
+    def __init__(self, W, z_dim=10, nc=3,a_dim=40):
         super(IVAE, self).__init__()
+        self.gumble_idx = 2.0
+        self.W = W
         self.z_dim = z_dim
         self.a_dim = a_dim
         self.nc = nc
@@ -109,88 +119,18 @@ class IVAE(nn.Module):
             nn.ReLU(True),
             nn.Conv2d(64, 256, 4, 1),            # B, 256,  1,  1
             nn.ReLU(True),
-            View((-1, 256*1*1)),                 # B, 256
-            nn.Linear(256, 128),             # B, z_dim*2
-            nn.ReLU(),
-            nn.Linear(128, z_dim*a_dim),
+            View((-1, 256*1*1))
+            #nn.Linear(256, z_dim*2),             # B, z_dim*2
         )
-        self.decoder = nn.Sequential(
-            nn.Linear(z_dim*a_dim,128),
-            nn.ReLU(),
-            nn.Linear(128, 256),                 # B, 256
-            View((-1, 256, 1, 1)),               # B, 256,  1,  1
-            nn.ReLU(True),
-            nn.ConvTranspose2d(256, 64, 4),      # B,  64,  4,  4
-            nn.ReLU(True),
-            nn.ConvTranspose2d(64, 64, 4, 2, 1), # B,  64,  8,  8
-            nn.ReLU(True),
-            nn.ConvTranspose2d(64, 32, 4, 2, 1), # B,  32, 16, 16
-            nn.ReLU(True),
-            nn.ConvTranspose2d(32, 32, 4, 2, 1), # B,  32, 32, 32
-            nn.ReLU(True),
-            nn.ConvTranspose2d(32, nc, 4, 2, 1),  # B, nc, 64, 64
-        )
-
-        self.weight_init()
-
-    def weight_init(self):
-        for block in self._modules:
-            for m in self._modules[block]:
-                kaiming_init(m)
-                
-    def encoder_init(self):
-        for m in self._modules['encoder']:
-            kaiming_init(m)
-    
-    def decoder_init(self):
-        for m in self._modules['decoder']:
-            kaiming_init(m)
-
-    def forward(self, x):
-        z_matrix = self._encode(x)
-        z_prob = F.softmax(z_matrix,-1)
-        z_ronehot = RelaxedOneHotCategorical(0.5, probs=z_prob).rsample()
-        x_recon = self._decode(z_ronehot)
-        return x_recon
-
-    def _encode(self, x):
-        return self.encoder(x).reshape(-1,self.z_dim,self.a_dim)
-
-    def _decode(self, z_onehot):
-        z_long = z_onehot.reshape(-1,self.z_dim*self.a_dim)
-        return self.decoder(z_long)
-
         
-'''
-class IVAE(nn.Module):
-    """Iterated learning fashion VAE model, the z should be descrete"""
-
-    def __init__(self, z_dim=10, a_dim=40, nc=3):
-        super(IVAE, self).__init__()
-        self.z_dim = z_dim
-        self.a_dim = a_dim
-        self.nc = nc
-
-        self.encoder = nn.Sequential(
-            nn.Conv2d(nc, 32, 4, 2, 1),          # B,  32, 32, 32
-            nn.ReLU(True),
-            nn.Conv2d(32, 32, 4, 2, 1),          # B,  32, 16, 16
-            nn.ReLU(True),
-            nn.Conv2d(32, 64, 4, 2, 1),          # B,  64,  8,  8
-            nn.ReLU(True),
-            nn.Conv2d(64, 64, 4, 2, 1),          # B,  64,  4,  4
-            nn.ReLU(True),
-            nn.Conv2d(64, 256, 4, 1),            # B, 256,  1,  1
-            nn.ReLU(True),
-            View((-1, 256*1*1)),                 # B, 256
-            nn.Linear(256, 128),             # B, z_dim*2
-            nn.Linear(128,z_dim*a_dim) 
+        self.encoder_mu = nn.Sequential(
+            nn.Linear(256, z_dim*(a_dim))       
         )
-
+        self.encoder_logvar = nn.Sequential(
+            nn.Linear(256, z_dim)       
+        )
         self.decoder = nn.Sequential(
-            nn.Linear(z_dim*a_dim,128),
-            nn.ReLU(),
-            nn.Linear(128,256),
+            nn.Linear(z_dim, 256),               # B, 256
             View((-1, 256, 1, 1)),               # B, 256,  1,  1
             nn.ReLU(True),
             nn.ConvTranspose2d(256, 64, 4),      # B,  64,  4,  4
@@ -213,13 +153,18 @@ class IVAE(nn.Module):
                 
     def encoder_init(self):
         for m in self._modules['encoder']:
-            kaiming_init(m)
-            
+                kaiming_init(m)
+        for m in self._modules['encoder_logvar']:
+                kaiming_init(m)
+        for m in self._modules['encoder_mu']:
+                kaiming_init(m)
+                
     def decoder_init(self):
         for m in self._modules['decoder']:
             kaiming_init(m)
 
     def forward(self, x):
+        '''
         distributions = self._encode(x)
         mu = distributions[:, :self.z_dim]
         logvar = distributions[:, self.z_dim:]
@@ -227,13 +172,47 @@ class IVAE(nn.Module):
         x_recon = self._decode(z)
 
         return x_recon, mu, logvar
+        '''
+        long_embed = self._encode(x)                # B, 256
+        logvar = self.encoder_logvar(long_embed)    # B, z_dim
+        tmp = self.encoder_mu(long_embed)           # B, (a_dim)*z_dim
+        for i in range(self.z_dim):
+            lp, rp = (self.a_dim)*i, (self.a_dim)*(i+1)
+            sfmx_tmp = F.softmax(tmp[:,lp:rp],dim=1)         # B, a_dim
+            gumb_tmp = RelaxedOneHotCategorical(self.gumble_idx, probs=sfmx_tmp).rsample()
+            mu_tmp = torch.mm(gumb_tmp,self.W.unsqueeze(1))  # B, 1
+            if i==0:
+                mu = mu_tmp
+            else:
+                mu = torch.cat((mu,mu_tmp),dim=1)   # Finally, it is [B, z_dim]
+        z = reparametrize(mu, logvar)
+        x_recon = self._decode(z)           
+        return x_recon, mu, logvar
+        
+
+    def fd_gen_z(self, x):
+        """Whether sample from distribution or directly return mu?"""
+        long_embed = self._encode(x)                # B, 256
+        #logvar = self.encoder_logvar(long_embed)    # B, z_dim
+        tmp = self.encoder_mu(long_embed)           # B, (a_dim)*z_dim
+        for i in range(self.z_dim):
+            lp, rp = (self.a_dim)*i, (self.a_dim)*(i+1)
+            sfmx_tmp = F.softmax(tmp[:,lp:rp],dim=1)         # B, a_dim
+            gumb_tmp = RelaxedOneHotCategorical(self.gumble_idx, probs=sfmx_tmp).rsample()
+            mu_tmp = torch.mm(gumb_tmp,self.W.unsqueeze(1))  # B, 1
+            if i==0:
+                mu = mu_tmp
+            else:
+                mu = torch.cat((mu,mu_tmp),dim=1)   # Finally, it is [B, z_dim]
+        #z = reparametrize(mu, logvar)         
+        return mu.data
+        
 
     def _encode(self, x):
-        return self.encoder(x).reshape(-1,self.z_dim,self.a_dim)
+        return self.encoder(x)            # B, 256
 
     def _decode(self, z):
         return self.decoder(z)
-'''
 
 
 def kaiming_init(m):
@@ -259,5 +238,5 @@ def normal_init(m, mean, std):
 
 
 if __name__ == '__main__':
-    net = BetaVAE_H()
+    net = IVAE()
     net.weight_init()

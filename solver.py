@@ -98,9 +98,14 @@ class IVAE_Solver(object):
         self.nc = 1
         self.decoder_dist = 'bernoulli'
         
-        net = IVAE
-
-        self.net = cuda(net(self.z_dim, self.nc, self.a_dim), self.use_cuda)
+        if args.discrete_z==True:
+            net = IVAE
+        else:
+            net = BetaVAE_H
+        
+        self.W = cuda(torch.linspace(-2,2-(4/args.a_dim),steps=args.a_dim),self.use_cuda)
+        
+        self.net = cuda(net(self.W, self.z_dim, self.nc, self.a_dim), self.use_cuda)
         self.optim = optim.Adam(self.net.parameters(), lr=self.lr,
                                     betas=(self.beta1, self.beta2))
         self.optim_EN = optim.Adam(self.net.parameters(), lr=self.lr,
@@ -256,17 +261,17 @@ class IVAE_Solver(object):
                 pbar.update(1)
 
                 x = Variable(cuda(x.float(), self.use_cuda))
-                x_recon = self.net(x)
+                x_recon, mu, logvar = self.net(x)
                 recon_loss = reconstruction_loss(x, x_recon, self.decoder_dist)
-                loss_list.append(recon_loss.data.item())
-#                total_kld, dim_wise_kld, mean_kld = kl_divergence(mu, logvar)
-#                beta_vae_loss = recon_loss + self.beta*total_kld
+                total_kld, dim_wise_kld, mean_kld = kl_divergence(mu, logvar)
+                beta_vae_loss = recon_loss + self.beta*total_kld
+                loss_list.append(beta_vae_loss.data.item())
 
                 self.optim.zero_grad()
-                recon_loss.backward()
+                beta_vae_loss.backward()
                 self.optim.step()
 
-                if self.global_iter%self.metric_step == 0:
+                if self.global_iter%self.metric_step == 1:
                     out_z,out_y, _ = self.gen_z(self.top_sim_batches)
                     corr = self.metric_topsim.top_sim_zy(out_z[:10],out_y[:10])
                     dist, comp, info, R = self.metric_R.dise_comp_info(out_z,out_y,'random_forest')
@@ -282,11 +287,11 @@ class IVAE_Solver(object):
                         f.write('\n [{:0>7d}] \t loss:{:.3f} \t corr:{:.3f} \t dise:{:.3f} \t comp:{:.3f}\t info:{:.3f}'.format(
                                 self.global_iter, recon_loss.data.item(), corr, dist[-1], comp[-1],info[-1]))
                     #print('======================================')
-                if self.global_iter%self.save_step == 0:
-                    self.save_checkpoint('last')
-                    #pbar.write('Saved checkpoint(iter:{})'.format(self.global_iter))
+                if self.global_iter%self.save_step == 1:
                     if self.save_gifs:
                         self.save_gif()
+                    self.save_checkpoint('last')
+
 
                 if self.global_iter%50000 == 0:
                     self.save_checkpoint(str(self.global_iter))
@@ -329,9 +334,8 @@ class IVAE_Solver(object):
                 out_x.append(x)
                 gen_cnt += 1
                 x = Variable(cuda(x.float(), self.use_cuda))
-                z_matrix = self.net._encode(x).data  
-                z_prob = F.softmax(z_matrix,-1)
-                out_z.append(OneHotCategorical(probs=z_prob).sample())                         
+                z = self.net.fd_gen_z(x)  
+                out_z.append(z)                         
                 if gen_cnt >= gen_size:
                     out = True
                     break
@@ -341,13 +345,14 @@ class IVAE_Solver(object):
     def save_gif(self, limit=3, inter=2/3, loc=-1):
         self.net_mode(train=False)
         import random
-        interpolation = torch.from_numpy(np.arange(0,self.a_dim,1))
+        interpolation = torch.linspace(-2,2-(4/20),steps=20)
         n_dsets = len(self.data_loader.dataset)        
         rand_idx = random.randint(1, n_dsets-1)
         
         random_img, _, _ = self.data_loader.dataset.__getitem__(rand_idx)
         random_img = Variable(cuda(random_img.float(), self.use_cuda), volatile=True).unsqueeze(0)
-        random_img_z = self.net._encode(random_img).argmax(2)
+        #random_img_z = self.net.fd_gen_z(random_img)
+        random_img_z = self.net._encode(random_img)[:, :self.z_dim]
         
         fixed_idx1 = 87040 # square
         fixed_idx2 = 332800 # ellipse
@@ -355,20 +360,22 @@ class IVAE_Solver(object):
 
         fixed_img1, _, _ = self.data_loader.dataset.__getitem__(fixed_idx1)
         fixed_img1 = Variable(cuda(fixed_img1.float(), self.use_cuda), volatile=True).unsqueeze(0)
-        fixed_img_z1 = self.net._encode(fixed_img1).argmax(2)
+        #fixed_img_z1 = self.net.fd_gen_z(fixed_img1)
+        fixed_img_z1 = self.net._encode(fixed_img1)[:, :self.z_dim]
         
 
         fixed_img2, _, _= self.data_loader.dataset.__getitem__(fixed_idx2)
         fixed_img2 = Variable(cuda(fixed_img2.float(), self.use_cuda), volatile=True).unsqueeze(0)
-        fixed_img_z2 = self.net._encode(fixed_img2).argmax(2)
+        #fixed_img_z2 = self.net.fd_gen_z(fixed_img2)
+        fixed_img_z2 = self.net._encode(fixed_img2)[:, :self.z_dim]
 
         fixed_img3, _, _ = self.data_loader.dataset.__getitem__(fixed_idx3)
         fixed_img3 = Variable(cuda(fixed_img3.float(), self.use_cuda), volatile=True).unsqueeze(0)
-        fixed_img_z3 = self.net._encode(fixed_img3).argmax(2)
+        #fixed_img_z3 = self.net.fd_gen_z(fixed_img3)
+        fixed_img_z3 = self.net._encode(fixed_img3)[:, :self.z_dim]
 
         Z = {'fixed_square':fixed_img_z1, 'fixed_ellipse':fixed_img_z2,
              'fixed_heart':fixed_img_z3, 'random_img':random_img_z}
-        zero_matrix = Variable(cuda(torch.zeros(1,self.z_dim,self.a_dim), self.use_cuda))
         gifs = []
         for key in Z.keys():
             z_ori = Z[key]
@@ -377,10 +384,12 @@ class IVAE_Solver(object):
                 if loc != -1 and row != loc:
                     continue
                 z = z_ori.clone()
+                #sample = F.sigmoid(self.net._decode(z)).data
+                #samples.append(sample)
+                #gifs.append(sample)                
                 for val in interpolation:
                     z[:, row] = val
-                    z_onehot = zero_matrix.scatter_(2,z.unsqueeze(-1),1)
-                    sample = F.sigmoid(self.net._decode(z_onehot)).data
+                    sample = F.sigmoid(self.net._decode(z)).data
                     samples.append(sample)
                     gifs.append(sample)
             samples = torch.cat(samples, dim=0).cpu()
@@ -432,10 +441,7 @@ class IVAE_Solver(object):
         else:
             print("=> no checkpoint found at '{}'".format(file_path))        
         
-        
-        
-        
-        
+ 
         
         
         
