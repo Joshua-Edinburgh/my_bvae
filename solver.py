@@ -20,10 +20,26 @@ from torch.autograd import Variable
 from torchvision.utils import save_image
 
 from utils.basic import cuda, grid2gif
-from model import BetaVAE_H, IVAE, reparametrize
+from model import BetaVAE_H, CVAE, reparametrize
 from utils.dataset import return_data
 from metrics import Metric_R, Metric_topsim
 from torch.distributions.one_hot_categorical import OneHotCategorical
+
+
+def z_to_onehot(z,z_dim,a_dim,use_cuda):
+    z = z.long()
+    b_size = z.size(0)
+    for i in range(b_size):
+        tmp_onehot = Variable(cuda(torch.FloatTensor(z_dim,a_dim),use_cuda))
+        tmp_onehot.zero_()
+        tmp_onehot = tmp_onehot.scatter_(1,z[i,:].unsqueeze(1),1)
+        tmp_onehot = tmp_onehot.unsqueeze(0)
+        if i == 0:
+            z_onehot = tmp_onehot
+        else:
+            z_onehot = torch.cat((z_onehot,tmp_onehot),dim=0)   
+    return z_onehot.view(-1,z_dim*a_dim)
+    
 
 def reconstruction_loss(x, x_recon, distribution):
     batch_size = x.size(0)
@@ -90,6 +106,7 @@ class IVAE_Solver(object):
         self.lr = args.lr
         self.beta1 = args.beta1
         self.beta2 = args.beta2
+        self.gumbel_tmp = 1.0
         
         self.nb_preENDE = args.nb_preENDE
         self.niter_preEN = args.niter_preEN
@@ -99,20 +116,20 @@ class IVAE_Solver(object):
         self.decoder_dist = 'bernoulli'
         
         if args.discrete_z==True:
-            net = IVAE
+            net = CVAE
         else:
             net = BetaVAE_H
         
         self.W = cuda(torch.linspace(-2,2-(4/args.a_dim),steps=args.a_dim),self.use_cuda)
         
         self.net = cuda(net(self.W, self.z_dim, self.nc, self.a_dim), self.use_cuda)
-        self.optim = optim.Adam(self.net.parameters(), lr=self.lr,
-                                    betas=(self.beta1, self.beta2))
-        self.optim_EN = optim.Adam(self.net.parameters(), lr=self.lr,
-                                    betas=(self.beta1, self.beta2))
-        self.optim_DE = optim.Adam(self.net.parameters(), lr=self.lr,
-                                    betas=(self.beta1, self.beta2))
+        self.optim = optim.Adam(self.net.parameters(), lr=self.lr,betas=(self.beta1, self.beta2))
+        self.optim_EN = optim.Adam(self.net.parameters(), lr=self.lr,betas=(self.beta1, self.beta2))
+        self.optim_DE = optim.Adam(self.net.parameters(), lr=self.lr,betas=(self.beta1, self.beta2))
 
+#        self.optim = optim.RMSprop(self.net.parameters(), lr=self.lr)
+#        self.optim_EN = optim.RMSprop(self.net.parameters(), lr=self.lr)
+#        self.optim_DE = optim.RMSprop(self.net.parameters(), lr=self.lr)
 
         self.exp_name = args.exp_name
         self.ckpt_dir = os.path.join('exp_results/'+args.exp_name,args.ckpt_dir)
@@ -179,15 +196,10 @@ class IVAE_Solver(object):
         loss_table = []
         while not out:  
             for z,x in zip(out_z,out_x): 
-                loss = 0
+                loss = Variable(cuda(x.float(), self.use_cuda))
                 x = Variable(cuda(x.float(), self.use_cuda))
-                z_matrix = Variable(cuda(z.long(), self.use_cuda))
-                z_hat_matrix = self.net._encode(x)
-                for i in range(self.z_dim):
-                    z_hat = z_hat_matrix[:,i,:]    
-                    z_tgt = z_matrix[:,i]
-                    loss += loss_fun(z_hat,z_tgt.argmax(-1))
-                    
+                z_hat = self.net._encode(x).view(-1,self.z_dim,self.a_dim).transpose(1,2)
+                loss = loss_fun(z_hat,z)
                 loss_table.append(loss.data.item())
                 
                 self.optim_EN.zero_grad()
@@ -216,7 +228,10 @@ class IVAE_Solver(object):
             for z, x in zip(out_z, out_x):
                 x = Variable(cuda(x.float(), self.use_cuda))
                 z = Variable(cuda(z.float(), self.use_cuda))
-                x_recon = self.net._decode(z)     
+                
+                z_onehot = z_to_onehot(z,self.z_dim,self.a_dim,self.use_cuda)
+                
+                x_recon = self.net._decode(z_onehot)     
                 loss = reconstruction_loss(x, x_recon, self.decoder_dist)
                 loss_table.append(loss.data.item())
                 
@@ -261,9 +276,11 @@ class IVAE_Solver(object):
                 pbar.update(1)
 
                 x = Variable(cuda(x.float(), self.use_cuda))
-                x_recon, mu, logvar = self.net(x)
+                x_recon, sftmx = self.net(x)
                 recon_loss = reconstruction_loss(x, x_recon, self.decoder_dist)
-                total_kld, dim_wise_kld, mean_kld = kl_divergence(mu, logvar)
+                kl1 = sftmx*torch.log(sftmx+1e-20)
+                kl2 = sftmx*np.log(1.0/self.a_dim+1e-20)
+                total_kld = torch.sum(kl1-kl2,dim=1).mean()
                 beta_vae_loss = recon_loss + self.beta*total_kld
                 loss_list.append(beta_vae_loss.data.item())
 
@@ -271,6 +288,10 @@ class IVAE_Solver(object):
                 beta_vae_loss.backward()
                 self.optim.step()
 
+                if self.global_iter%2000 == 1:
+                    self.gumbel_tmp = np.max((0.5,np.exp((-5e-6)*self.global_iter)))
+                    self.net.gumbel_tmp = self.gumbel_tmp
+                    
                 if self.global_iter%self.metric_step == 1:
                     out_z,out_y, _ = self.gen_z(self.top_sim_batches)
                     corr = self.metric_topsim.top_sim_zy(out_z[:10],out_y[:10])
@@ -345,14 +366,15 @@ class IVAE_Solver(object):
     def save_gif(self, limit=3, inter=2/3, loc=-1):
         self.net_mode(train=False)
         import random
-        interpolation = torch.linspace(-2,2-(4/20),steps=20)
+        #interpolation = torch.linspace(-2,2-(4/20),steps=20)
+        interpolation = torch.range(0,self.a_dim-1,4)
         n_dsets = len(self.data_loader.dataset)        
         rand_idx = random.randint(1, n_dsets-1)
         
         random_img, _, _ = self.data_loader.dataset.__getitem__(rand_idx)
         random_img = Variable(cuda(random_img.float(), self.use_cuda), volatile=True).unsqueeze(0)
-        #random_img_z = self.net.fd_gen_z(random_img)
-        random_img_z = self.net._encode(random_img)[:, :self.z_dim]
+        random_img_z = self.net.fd_gen_z(random_img)
+        #random_img_z = self.net._encode(random_img)[:, :self.z_dim]
         
         fixed_idx1 = 87040 # square
         fixed_idx2 = 332800 # ellipse
@@ -360,19 +382,19 @@ class IVAE_Solver(object):
 
         fixed_img1, _, _ = self.data_loader.dataset.__getitem__(fixed_idx1)
         fixed_img1 = Variable(cuda(fixed_img1.float(), self.use_cuda), volatile=True).unsqueeze(0)
-        #fixed_img_z1 = self.net.fd_gen_z(fixed_img1)
-        fixed_img_z1 = self.net._encode(fixed_img1)[:, :self.z_dim]
+        fixed_img_z1 = self.net.fd_gen_z(fixed_img1)
+        #fixed_img_z1 = self.net._encode(fixed_img1)[:, :self.z_dim]
         
 
         fixed_img2, _, _= self.data_loader.dataset.__getitem__(fixed_idx2)
         fixed_img2 = Variable(cuda(fixed_img2.float(), self.use_cuda), volatile=True).unsqueeze(0)
-        #fixed_img_z2 = self.net.fd_gen_z(fixed_img2)
-        fixed_img_z2 = self.net._encode(fixed_img2)[:, :self.z_dim]
+        fixed_img_z2 = self.net.fd_gen_z(fixed_img2)
+        #fixed_img_z2 = self.net._encode(fixed_img2)[:, :self.z_dim]
 
         fixed_img3, _, _ = self.data_loader.dataset.__getitem__(fixed_idx3)
         fixed_img3 = Variable(cuda(fixed_img3.float(), self.use_cuda), volatile=True).unsqueeze(0)
-        #fixed_img_z3 = self.net.fd_gen_z(fixed_img3)
-        fixed_img_z3 = self.net._encode(fixed_img3)[:, :self.z_dim]
+        fixed_img_z3 = self.net.fd_gen_z(fixed_img3)
+        #fixed_img_z3 = self.net._encode(fixed_img3)[:, :self.z_dim]
 
         Z = {'fixed_square':fixed_img_z1, 'fixed_ellipse':fixed_img_z2,
              'fixed_heart':fixed_img_z3, 'random_img':random_img_z}
@@ -383,13 +405,11 @@ class IVAE_Solver(object):
             for row in range(self.z_dim):
                 if loc != -1 and row != loc:
                     continue
-                z = z_ori.clone()
-                #sample = F.sigmoid(self.net._decode(z)).data
-                #samples.append(sample)
-                #gifs.append(sample)                
+                z = z_ori.clone()         
                 for val in interpolation:
                     z[:, row] = val
-                    sample = F.sigmoid(self.net._decode(z)).data
+                    z_onehot = z_to_onehot(z,self.z_dim,self.a_dim,self.use_cuda)
+                    sample = F.sigmoid(self.net._decode(z_onehot)).data
                     samples.append(sample)
                     gifs.append(sample)
             samples = torch.cat(samples, dim=0).cpu()

@@ -96,6 +96,90 @@ class BetaVAE_H(nn.Module):
     def _decode(self, z):
         return self.decoder(z)
 
+
+
+class CVAE(nn.Module):
+    """Catogorical VAE structure
+    """
+
+    def __init__(self, W, z_dim=10, nc=3,a_dim=40,gumbel_tmp=1.0):
+        super(CVAE, self).__init__()
+        self.gumbel_tmp = gumbel_tmp
+        self.W = W
+        self.z_dim = z_dim
+        self.a_dim = a_dim
+        self.nc = nc
+        self.encoder = nn.Sequential(
+            nn.Conv2d(nc, 32, 4, 2, 1),          # B,  32, 32, 32
+            nn.ReLU(True),
+            nn.Conv2d(32, 32, 4, 2, 1),          # B,  32, 16, 16
+            nn.ReLU(True),
+            nn.Conv2d(32, 64, 4, 2, 1),          # B,  64,  8,  8
+            nn.ReLU(True),
+            nn.Conv2d(64, 64, 4, 2, 1),          # B,  64,  4,  4
+            nn.ReLU(True),
+            nn.Conv2d(64, 256, 4, 1),            # B, 256,  1,  1
+            nn.ReLU(True),
+            View((-1, 256*1*1)),
+            nn.Linear(256, z_dim*a_dim)             # B, z_dim*2
+        )
+        
+        self.decoder = nn.Sequential(
+            nn.Linear(z_dim*a_dim, 256),               # B, 256
+            View((-1, 256, 1, 1)),               # B, 256,  1,  1
+            nn.ReLU(True),
+            nn.ConvTranspose2d(256, 64, 4),      # B,  64,  4,  4
+            nn.ReLU(True),
+            nn.ConvTranspose2d(64, 64, 4, 2, 1), # B,  64,  8,  8
+            nn.ReLU(True),
+            nn.ConvTranspose2d(64, 32, 4, 2, 1), # B,  32, 16, 16
+            nn.ReLU(True),
+            nn.ConvTranspose2d(32, 32, 4, 2, 1), # B,  32, 32, 32
+            nn.ReLU(True),
+            nn.ConvTranspose2d(32, nc, 4, 2, 1),  # B, nc, 64, 64
+        )
+
+        self.weight_init()
+
+    def weight_init(self):
+        for block in self._modules:
+            for m in self._modules[block]:
+                kaiming_init(m)
+                
+    def encoder_init(self):
+        for m in self._modules['encoder']:
+                kaiming_init(m)
+                
+    def decoder_init(self):
+        for m in self._modules['decoder']:
+            kaiming_init(m)
+
+    def forward(self, x):
+        hidden = self._encode(x)
+        hidden_matrix = hidden.view(-1,self.z_dim,self.a_dim)
+        sftmx = F.softmax(hidden_matrix,dim=-1)
+        z_matrix = RelaxedOneHotCategorical(self.gumbel_tmp, probs=sftmx).rsample()
+        x_recon = self._decode(z_matrix.view(-1,self.z_dim*self.a_dim))
+        return x_recon, sftmx.reshape(*hidden.size())
+        
+
+    def fd_gen_z(self, x):
+        hidden = self._encode(x)
+        hidden_matrix = hidden.view(-1,self.z_dim,self.a_dim)
+        sftmx = F.softmax(hidden_matrix,dim=-1)
+        z_argmx = OneHotCategorical(probs=sftmx).sample().argmax(dim=-1)
+        return z_argmx
+        
+
+    def _encode(self, x):
+        return self.encoder(x)            # B, 256
+
+    def _decode(self, z_matrix):
+        return self.decoder(z_matrix)
+
+
+
+
 class IVAE(nn.Module):
     """Our VAE structure, with mu(X) discrete.
         The mapping matrix W must feeded in cuda() type

@@ -27,8 +27,7 @@ def main(args):
     np.random.seed(seed)
 
     net = IVAE_Solver(args)
-    #net.iterated_learning()
-    net.interact_train()
+    net.iterated_learning()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='toy Beta-VAE')
@@ -38,7 +37,7 @@ if __name__ == "__main__":
     parser.add_argument('--train', default=True, type=str2bool, help='train or traverse')
     parser.add_argument('--seed', default=1, type=int, help='random seed')
     parser.add_argument('--cuda', default=True, type=str2bool, help='enable cuda')
-    parser.add_argument('--max_iter_per_gen', default=5000, type=int, help='maximum training iteration per generation')
+    parser.add_argument('--max_iter_per_gen', default=10, type=int, help='maximum training iteration per generation')
     parser.add_argument('--max_gen', default=10, type=int, help='number of generations')
     parser.add_argument('--batch_size', default=64, type=int, help='batch size')
 
@@ -68,16 +67,16 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
 
-    #main(args)
-
+    main(args)
+'''
     seed = args.seed
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     np.random.seed(seed)
 
     net = IVAE_Solver(args)
-    loss_list = net.interact_train()
-
+    loss_list = net.iterated_learning()
+'''
     #out_z, out_yc, out_x = net.gen_z(gen_size=args.nb_preENDE)
     
     #loss_table_EN = net.pre_train_EN(out_z, out_x)
