@@ -20,9 +20,9 @@ from torch.autograd import Variable
 from torchvision.utils import save_image
 
 from utils.basic import cuda, grid2gif
-from model import BetaVAE_H, CVAE, reparametrize
-from utils.dataset import return_data
-from metrics import Metric_R, Metric_topsim
+from model import *
+from utils.dataset import return_data_dsprites, return_data_3dshapes
+from metrics import Metric_DCI, Metric_topsim, Metric_Factor
 from torch.distributions.one_hot_categorical import OneHotCategorical
 
 
@@ -39,7 +39,20 @@ def z_to_onehot(z,z_dim,a_dim,use_cuda):
         else:
             z_onehot = torch.cat((z_onehot,tmp_onehot),dim=0)   
     return z_onehot.view(-1,z_dim*a_dim)
-    
+
+
+
+def permute_dims(z):
+    assert z.dim() == 2
+
+    B, _ = z.size()
+    perm_z = []
+    for z_j in z.split(1, 1):
+        perm = torch.randperm(B).to(z.device)
+        perm_z_j = z_j[perm]
+        perm_z.append(perm_z_j)
+
+    return torch.cat(perm_z, 1)   
 
 def reconstruction_loss(x, x_recon, distribution):
     batch_size = x.size(0)
@@ -55,7 +68,7 @@ def reconstruction_loss(x, x_recon, distribution):
 
     return recon_loss
 
-def kl_divergence(mu, logvar):
+def KLD_Gaussian(mu, logvar):
     batch_size = mu.size(0)
     assert batch_size != 0
     if mu.data.ndimension() == 4:
@@ -70,26 +83,17 @@ def kl_divergence(mu, logvar):
 
     return total_kld, dimension_wise_kld, mean_kld
 
-class DataGather(object):
-    def __init__(self):
-        self.data = self.get_empty_data_dict()
+def KLD_Catagorical(sftmx):
+    '''
+        Assume p(z) has uniform catagorical distribution
+    '''
+    batch_size, z_dim, a_dim = sftmx.shape
+    sftmx = sftmx.view(batch_size,-1)
+    kl1 = (sftmx*torch.log(sftmx+1e-20))
+    kl2 = (sftmx*np.log(a_dim+1e-20))              
+    total_kld = torch.sum(kl1+kl2,dim=1).mean()
 
-    def get_empty_data_dict(self):
-        return dict(iter=[],
-                    recon_loss=[],
-                    total_kld=[],
-                    dim_wise_kld=[],
-                    mean_kld=[],
-                    mu=[],
-                    var=[],
-                    images=[],)
-
-    def insert(self, **kwargs):
-        for key in kwargs:
-            self.data[key].append(kwargs[key])
-
-    def flush(self):
-        self.data = self.get_empty_data_dict()
+    return total_kld
         
 
 class IVAE_Solver(object):
@@ -99,10 +103,13 @@ class IVAE_Solver(object):
         self.max_gen = args.max_gen
         self.global_iter = 0
         self.global_gen = 0
+        self.data_type = args.data_type
+        self.model_type = args.model_type
 
         self.z_dim = args.z_dim
         self.a_dim = args.a_dim
         self.beta = args.beta
+        self.gamma = args.gamma
         self.lr = args.lr
         self.beta1 = args.beta1
         self.beta2 = args.beta2
@@ -111,18 +118,38 @@ class IVAE_Solver(object):
         self.nb_preENDE = args.nb_preENDE
         self.niter_preEN = args.niter_preEN
         self.niter_preDE = args.niter_preDE
-
-        self.nc = 1
-        self.decoder_dist = 'bernoulli'
         
-        if args.discrete_z==True:
-            net = CVAE
-        else:
+        if (self.data_type).lower()=='dsprites':
+            self.data_loader = return_data_dsprites(args)
+            self.nc = 1
+            self.decoder_dist = 'bernoulli'
+        elif (self.data_type).lower()=='3dshapes':
+            self.data_loader = return_data_3dshapes(args)
+            self.nc = 3
+            self.decoder_dist = 'gaussian'
+        
+        if (self.model_type).lower()=='bvae':
             net = BetaVAE_H
-        
-        self.W = cuda(torch.linspace(-2,2-(4/args.a_dim),steps=args.a_dim),self.use_cuda)
-        
-        self.net = cuda(net(self.W, self.z_dim, self.nc, self.a_dim), self.use_cuda)
+            self.net = cuda(net(self.z_dim, self.nc), self.use_cuda)
+        elif (self.model_type).lower()=='cvae':
+            net = CVAE
+            self.net = cuda(net(self.z_dim, self.nc, self.a_dim), self.use_cuda)
+        elif (self.model_type).lower() in ['fvae','fcvae']:
+            self.D = cuda(F_Discriminator(self.z_dim), self.use_cuda)
+            self.optim_D = optim.Adam(self.D.parameters(), lr=self.lr,betas=(self.beta1, self.beta2))
+            if (self.model_type).lower() == 'fvae':
+                net = FVAE
+                self.net = cuda(net(self.z_dim, self.nc), self.use_cuda)
+            else:
+                net = FCVAE
+                self.net = cuda(net(self.z_dim, self.nc,self.a_dim), self.use_cuda)
+        elif (self.model_type).lower()=='vqvae':
+            net = VQVAE
+            self.net = cuda(net(self.z_dim, self.nc, self.a_dim, 1), self.use_cuda)
+        else:
+            raise('model_type should be BVAE, CVAE, FVAE, FCVAE or VQVAE')
+
+        self.MSE_Loss = nn.MSELoss()    
         self.optim = optim.Adam(self.net.parameters(), lr=self.lr,betas=(self.beta1, self.beta2))
         self.optim_EN = optim.Adam(self.net.parameters(), lr=self.lr,betas=(self.beta1, self.beta2))
         self.optim_DE = optim.Adam(self.net.parameters(), lr=self.lr,betas=(self.beta1, self.beta2))
@@ -149,17 +176,16 @@ class IVAE_Solver(object):
             
         self.save_step = args.save_step
         self.metric_step = args.metric_step
-        self.metric_topsim = Metric_topsim(args)
+        #self.metric_topsim = Metric_topsim(args)
         self.top_sim_batches = args.top_sim_batches
-        self.metric_R = Metric_R(args)
+        self.metric_DCI = Metric_DCI(args)
+        self.metric_Factor = Metric_Factor(args)
         self.save_gifs = args.save_gifs
 
         self.dset_dir = args.dset_dir
         self.batch_size = args.batch_size
-        self.data_loader = return_data(args)
-
-        self.gather = DataGather()      
-
+    
+            
     def iterated_learning(self):
         out_z = []
         out_x = []
@@ -243,7 +269,7 @@ class IVAE_Solver(object):
                     out = True
                     break
                 pre_DE_cnt += 1
-                pbar.update(1)                
+                pbar.update(1)
         pbar.write("[Pretrain Decoder Finished]")
         pbar.close()   
         sys.stdout.flush()               
@@ -259,9 +285,9 @@ class IVAE_Solver(object):
         dist_list = []
         comp_list = []
         info_list = []
+        Fscore_list = []
+        DCI_list = []
         R_list = []
-        
-        loss_list = []
 
         pbar = tqdm(total=self.max_iter_per_gen)
         pbar.update(0)
@@ -276,37 +302,93 @@ class IVAE_Solver(object):
                 pbar.update(1)
 
                 x = Variable(cuda(x.float(), self.use_cuda))
-                x_recon, sftmx = self.net(x)
-                recon_loss = reconstruction_loss(x, x_recon, self.decoder_dist)
-                kl1 = sftmx*torch.log(sftmx+1e-20)
-                kl2 = sftmx*np.log(1.0/self.a_dim+1e-20)
-                total_kld = torch.sum(kl1-kl2,dim=1).mean()
-                beta_vae_loss = recon_loss + self.beta*total_kld
-                loss_list.append(beta_vae_loss.data.item())
+                
+                if (self.model_type).lower()=='bvae':
+                    x_recon, mu, logvar = self.net(x)
+                    recon_loss = reconstruction_loss(x, x_recon, self.decoder_dist)
+                    total_kld, _dim_wise_kld, _mean_kld = KLD_Gaussian(mu, logvar)
+                    beta_vae_loss = recon_loss + self.beta*total_kld
+                    loss_list.append(recon_loss.data.item())
+                    self.optim.zero_grad()
+                    beta_vae_loss.backward()
+                    self.optim.step()     
+                    
+                elif (self.model_type).lower()=='cvae':
+                    x_recon, sftmx = self.net(x)
+                    recon_loss = reconstruction_loss(x, x_recon, self.decoder_dist)
+                    total_kld = KLD_Catagorical(sftmx)
+                    cvae_loss = recon_loss + self.beta*total_kld
+                    loss_list.append(recon_loss.data.item())    
+                    self.optim.zero_grad()
+                    cvae_loss.backward()
+                    self.optim.step()
 
-                self.optim.zero_grad()
-                beta_vae_loss.backward()
-                self.optim.step()
+                elif (self.model_type).lower() in ['fvae','fcvae']:
+                    half = int(self.batch_size/2)
+                    ones = Variable(cuda(torch.ones(half, dtype=torch.long),self.use_cuda))
+                    zeros = Variable(cuda(torch.zeros(half, dtype=torch.long),self.use_cuda))                    
+                    x1, x2 = x[:half], x[half:]
+                    y1, y2 = y[:half], y[half:]
+                    yc1, yc2 = yc[:half], yc[half:]     
+                    if (self.model_type).lower() == 'fvae':
+                        x_recon, mu, logvar, z = self.net(x1)
+                        total_kld, _, _ = KLD_Gaussian(mu, logvar) 
+                    elif (self.model_type).lower() == 'fcvae':
+                        x_recon, sftmx, z = self.net(x1)
+                        total_kld = KLD_Catagorical(sftmx)  
+                    recon_loss = reconstruction_loss(x1, x_recon, self.decoder_dist)                  
+                    D_z = self.D(z)
+                    tc_loss = (D_z[:, :1] - D_z[:, 1:]).mean()
+                    fvae_loss = recon_loss + total_kld + self.gamma*tc_loss
+                    loss_list.append(recon_loss.data.item()) 
+                    self.optim.zero_grad()
+                    fvae_loss.backward(retain_graph=True)
+                    self.optim.step()                                    
+                    z_prime = self.net(x2, no_dec=True)
+                    z_pperm = permute_dims(z_prime).detach()
+                    D_z_pperm = self.D(z_pperm)
+                    D_tc_loss = 0.5*(F.cross_entropy(D_z, zeros) + F.cross_entropy(D_z_pperm, ones))
+                    self.optim_D.zero_grad()
+                    D_tc_loss.backward()
+                    self.optim_D.step()
+                    
+                elif (self.model_type).lower() in ['vqvae']:
+                    x_recon, z_enc, z_dec, z_enc_for_embd = self.net(x)
+                    recon_loss = reconstruction_loss(x, x_recon, self.decoder_dist)
+                    loss_list.append(recon_loss.data.item())    
+                    z_sgembd_loss = self.MSE_Loss(z_enc, z_dec.detach())
+                    sgz_embd_loss = self.MSE_Loss(self.net._modules['embd'].weight, z_enc_for_embd.detach())
+                    vqvae_loss = recon_loss + sgz_embd_loss + self.beta*z_sgembd_loss
+                    self.optim.zero_grad()
+                    vqvae_loss.backward(retain_graph=True)
+                    z_enc.backward(self.net.grad_for_encoder)
+                    self.optim.step()
+                    
+                    
 
                 if self.global_iter%2000 == 1:
-                    self.gumbel_tmp = np.max((0.5,np.exp((-5e-6)*self.global_iter)))
+                    self.gumbel_tmp = np.max((0.5,np.exp((-1e-6)*self.global_iter)))
                     self.net.gumbel_tmp = self.gumbel_tmp
                     
                 if self.global_iter%self.metric_step == 1:
                     out_z,out_y, _ = self.gen_z(self.top_sim_batches)
-                    corr = self.metric_topsim.top_sim_zy(out_z[:10],out_y[:10])
-                    dist, comp, info, R = self.metric_R.dise_comp_info(out_z,out_y,'random_forest')
+                    corr = 0.
+                    #corr = self.metric_topsim.top_sim_zy(out_z[:10],out_y[:10])
+                    Fscore = self.metric_Factor.get_score(out_z,out_y)
+                    dist, comp, info, DCI, R  = self.metric_DCI.dise_comp_info(out_z,out_y,'random_forest')
                     indx_list.append(self.global_iter)
                     loss_list.append(recon_loss.data.item())
                     corr_list.append(corr)
                     dist_list.append(dist)
                     comp_list.append(comp)
                     info_list.append(info)
+                    DCI_list.append(DCI)
+                    Fscore_list.append(Fscore)
                     R_list.append(R)
                     #print('======================================')
                     with open(self.metric_dir+'/results.txt','a') as f:
-                        f.write('\n [{:0>7d}] \t loss:{:.3f} \t corr:{:.3f} \t dise:{:.3f} \t comp:{:.3f}\t info:{:.3f}'.format(
-                                self.global_iter, recon_loss.data.item(), corr, dist[-1], comp[-1],info[-1]))
+                        f.write('\n [{:0>7d}] \t loss:{:.3f} \t dise:{:.3f} \t comp:{:.3f}\t info:{:.3f} \t DCI:{:.3f}\t FScore:{:.3f}'.format(
+                                self.global_iter, recon_loss.data.item(), dist[-1], comp[-1],info[-1],DCI,Fscore))
                     #print('======================================')
                 if self.global_iter%self.save_step == 1:
                     if self.save_gifs:
@@ -328,6 +410,8 @@ class IVAE_Solver(object):
                  dist = np.asarray(dist_list),       # (len, z_dim+1)
                  comp = np.asarray(comp_list),       # (len, y_dim+1)
                  info = np.asarray(info_list),       # (len, y_dim+1)
+                 Fscore = np.asarray(Fscore_list),   # (len,)
+                 DCI = np.asarray(DCI_list),         # (len,)
                  R = np.asarray(R_list))             # (len, z_dim, y_dim)
         pbar.write("[Training Finished]")
         pbar.close()
@@ -366,15 +450,16 @@ class IVAE_Solver(object):
     def save_gif(self, limit=3, inter=2/3, loc=-1):
         self.net_mode(train=False)
         import random
-        #interpolation = torch.linspace(-2,2-(4/20),steps=20)
-        interpolation = torch.range(0,self.a_dim-1,4)
+        if (self.model_type).lower() in ['bvae','fvae','vqvae']:
+            interpolation = torch.arange(-limit, limit+0.1, inter)
+        elif (self.model_type).lower() in ['cvae','fcvae']:
+            interpolation = torch.range(0,self.a_dim-1,1)
         n_dsets = len(self.data_loader.dataset)        
         rand_idx = random.randint(1, n_dsets-1)
         
         random_img, _, _ = self.data_loader.dataset.__getitem__(rand_idx)
         random_img = Variable(cuda(random_img.float(), self.use_cuda), volatile=True).unsqueeze(0)
         random_img_z = self.net.fd_gen_z(random_img)
-        #random_img_z = self.net._encode(random_img)[:, :self.z_dim]
         
         fixed_idx1 = 87040 # square
         fixed_idx2 = 332800 # ellipse
@@ -383,18 +468,15 @@ class IVAE_Solver(object):
         fixed_img1, _, _ = self.data_loader.dataset.__getitem__(fixed_idx1)
         fixed_img1 = Variable(cuda(fixed_img1.float(), self.use_cuda), volatile=True).unsqueeze(0)
         fixed_img_z1 = self.net.fd_gen_z(fixed_img1)
-        #fixed_img_z1 = self.net._encode(fixed_img1)[:, :self.z_dim]
         
 
         fixed_img2, _, _= self.data_loader.dataset.__getitem__(fixed_idx2)
         fixed_img2 = Variable(cuda(fixed_img2.float(), self.use_cuda), volatile=True).unsqueeze(0)
         fixed_img_z2 = self.net.fd_gen_z(fixed_img2)
-        #fixed_img_z2 = self.net._encode(fixed_img2)[:, :self.z_dim]
 
         fixed_img3, _, _ = self.data_loader.dataset.__getitem__(fixed_idx3)
         fixed_img3 = Variable(cuda(fixed_img3.float(), self.use_cuda), volatile=True).unsqueeze(0)
         fixed_img_z3 = self.net.fd_gen_z(fixed_img3)
-        #fixed_img_z3 = self.net._encode(fixed_img3)[:, :self.z_dim]
 
         Z = {'fixed_square':fixed_img_z1, 'fixed_ellipse':fixed_img_z2,
              'fixed_heart':fixed_img_z3, 'random_img':random_img_z}
@@ -407,9 +489,16 @@ class IVAE_Solver(object):
                     continue
                 z = z_ori.clone()         
                 for val in interpolation:
-                    z[:, row] = val
-                    z_onehot = z_to_onehot(z,self.z_dim,self.a_dim,self.use_cuda)
-                    sample = F.sigmoid(self.net._decode(z_onehot)).data
+                    z[:, row] = val                        
+                    if (self.model_type).lower() in ['bvae','fvae']:
+                        sample = F.sigmoid(self.net._decode(z)).data
+                    elif (self.model_type).lower() in ['vqvae']:
+                        z_reshape = self.net.find_nearest(z,self.net.embd.weight).view(-1,self.z_dim,1,1)
+                        sample = F.sigmoid(self.net._decode(z_reshape)).data
+                    elif (self.model_type).lower() in ['cvae','fcvae']:
+                        z_onehot = z_to_onehot(z,self.z_dim,self.a_dim,self.use_cuda)
+                        sample = F.sigmoid(self.net._decode(z_onehot)).data
+                        
                     samples.append(sample)
                     gifs.append(sample)
             samples = torch.cat(samples, dim=0).cpu()
@@ -431,11 +520,17 @@ class IVAE_Solver(object):
     def net_mode(self, train):
         if not isinstance(train, bool):
             raise('Only bool type is supported. True or False')
-
         if train:
             self.net.train()
         else:
             self.net.eval()
+            
+        if (self.model_type).lower()=='fvae':
+            if train:
+                self.D.train()
+            else:
+                self.D.eval()        
+
         
     def save_checkpoint(self, filename, silent=True):
         model_states = {'net':self.net.state_dict(),}

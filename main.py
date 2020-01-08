@@ -32,7 +32,8 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='toy Beta-VAE')
     
-    parser.add_argument('--discrete_z', default=True, type=str2bool, help='Whether use discrete_z')
+    parser.add_argument('--model_type', default='FVAE', type=str, help='BVAE, CVAE, FVAE, FCVAE or VQVAE')
+    parser.add_argument('--data_type', default='dsprites', type=str, help='dsprites, 3dshapes or colormnist')
 
     parser.add_argument('--train', default=True, type=str2bool, help='train or traverse')
     parser.add_argument('--seed', default=1, type=int, help='random seed')
@@ -41,9 +42,10 @@ if __name__ == "__main__":
     parser.add_argument('--max_gen', default=10, type=int, help='number of generations')
     parser.add_argument('--batch_size', default=64, type=int, help='batch size')
 
-    parser.add_argument('--z_dim', default=5, type=int, help='dimension of the representation z')
+    parser.add_argument('--z_dim', default=10, type=int, help='dimension of the representation z')
     parser.add_argument('--a_dim', default=40, type=int, help='dimension of the representation z')
     parser.add_argument('--beta', default=4, type=float, help='beta parameter for KL-term in original beta-VAE')
+    parser.add_argument('--gamma', default=30, type=float, help='gamma parameter for Factor-VAE')
     parser.add_argument('--lr', default=5e-4, type=float, help='learning rate')
     parser.add_argument('--beta1', default=0.9, type=float, help='Adam optimizer beta1')
     parser.add_argument('--beta2', default=0.999, type=float, help='Adam optimizer beta2')
@@ -67,17 +69,17 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
 
-    main(args)
-'''
+#    main(args)
+
     seed = args.seed
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     np.random.seed(seed)
 
     net = IVAE_Solver(args)
-    loss_list = net.iterated_learning()
-'''
-    #out_z, out_yc, out_x = net.gen_z(gen_size=args.nb_preENDE)
+    loss_list = net.interact_train()
+
+#    out_z, out_yc, out_x = net.gen_z(gen_size=args.nb_preENDE)
     
     #loss_table_EN = net.pre_train_EN(out_z, out_x)
     #loss_table_DE = net.pre_train_DE(out_z, out_x)

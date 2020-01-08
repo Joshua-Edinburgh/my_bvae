@@ -22,7 +22,6 @@ from sklearn.linear_model import Lasso
 from sklearn.ensemble.forest import RandomForestRegressor
 from utils.hinton import hinton
 import matplotlib.pyplot as plt
-from utils.dataset import ys_to_xbool_dsprite
 
 # ====== For these distance functions, x1 and x2 should be vector with size [x]
 def cos_dist(x1,x2):
@@ -87,7 +86,51 @@ def unpack_batch_x(x_list):
         x_tensor_list.append(torch.from_numpy(x))
     return torch.stack(x_tensor_list).view(-1,64,64)
 
-class Metric_R:
+
+class Metric_Factor:
+    def __init__(self,args):
+        self.b_siz = args.batch_size
+        self.y_dim = 5
+        self.y_values = [3,  6, 40, 32, 32]
+        self.z_dim = args.z_dim
+        self.metric_dir = os.path.join('exp_results/'+args.exp_name+'/metrics')
+        if not os.path.exists(self.metric_dir):
+            os.makedirs(self.metric_dir)
+        
+    def get_score(self, z_list, y_list):
+        # --------------- Prepare the data ---------------------
+        z_upk = unpack_batch_z(z_list)  # x_upk has shape B*x_dim
+        z_upk = z_upk/z_upk.std(0)
+        y_upk = unpack_batch_y(y_list)   
+        data_len = y_upk.shape[0]
+        
+        # --------------- Collect the votes ---------------------
+        vote_list = []
+        for i in range(20):     # Conduct 10 times calculation, each time use half of the data
+            random_mask = torch.rand(data_len)>0.5
+            z_upk_half = z_upk[random_mask,:]
+            y_upk_half = y_upk[random_mask,:]
+            for k in range(self.y_dim):
+                for j in range(self.y_values[k]):
+                    mask = y_upk_half[:,k]==j
+                    min_idx = z_upk_half[mask].std(0).argmin().cpu()
+                    vote_list.append((min_idx,k))
+
+        V_Matrix = np.zeros((self.z_dim,self.y_dim))
+        for (a,b) in vote_list:
+            V_Matrix[a,b] += 1
+            
+        # --------------- Calculate the score ---------------------
+        Classifier = V_Matrix.argmax(0)
+        correct_cnt = 0
+        for k in range(self.y_dim):
+            j = Classifier[k]
+            correct_cnt += V_Matrix[j,k]     
+        
+        return correct_cnt/V_Matrix.sum()
+
+
+class Metric_DCI:
     def __init__(self,args):
         self.b_siz = args.batch_size
         self.y_dim = 5
@@ -160,8 +203,13 @@ class Metric_R:
                 self.fit_get_scores(z_list,y_list,RandomForestRegressor, reg_paras,nrmse,'feature_importances_')              
         else:
             raise('Only "lasso or random_forest"')
-          
-        return disent_scores, complete_scores, info_scores, R
+            
+        tmp_dci = 0
+        for i in range(R.shape[-1]):
+            tmp_dci += (-R[:,i]*np.log(R[:,i]+1e-16)).sum()
+        DCI = 1 - tmp_dci/R.shape[-1]
+        
+        return disent_scores, complete_scores, info_scores, DCI, R 
     
     def hinton_fig(self,R_list, model_list):
         num_figures = len(R_list)
@@ -170,12 +218,13 @@ class Metric_R:
         axes = axes.ravel()
         part_name = ''
         for i, R in enumerate(R_list):           
-            hinton(R, '$\mathbf{z}$', '$\mathbf{c}$',ax=axes[i], fontsize=18)  
+            hinton(R, '$\mathbf{y}$', '$\mathbf{z}$',ax=axes[i], fontsize=18)  
             axes[i].set_title('{0}'.format(model_list[i]), fontsize=20)
             part_name += '_'
             part_name += model_list[i].lower()            
         fig_name = self.metric_dir+'/hinton'+part_name+'.pdf'
         fig.savefig(fig_name)
+
 
 
 
@@ -275,19 +324,12 @@ class Metric_topsim:
 
 if __name__ == "__main__":
 
-    # ========== Test for Metric_topsim ================
-    # ====== Must run dataset.py to prepare variable: dataset_zip
-    #metric_topsim = Metric_topsim(args)
-    #corr = metric_topsim.top_sim_zy(out_z,out_y)
-    #print('Topsim between z and y is: %.4f'%corr)
-    #out_x = ys_to_xbool_dsprite(out_y,args,dataset_zip)
-    #corrX_Y = metric_topsim.top_sim_xzoy(out_y,out_x)
-    #print('Topsim between y and X is: %.4f'%corrX_Y)
     # ========== Test for Metric_R ================
-    metric_R = Metric_R(args)
-    a1, b1, c1, R1 = metric_R.dise_comp_info(out_z,out_y,'lasso')
+    #metric_R = Metric_R(args)
+    #a1, b1, c1, R1 = metric_R.dise_comp_info(out_z,out_y,'lasso')
     #a2, b2, c2, R2 = metric_R.dise_comp_info(out_z,out_y,'random_forest')
     #model_list = ['Base-Lasso','Base-RF']
     #metric_R.hinton_fig([R1,R2], model_list)
-    
+   metric_Factor = Metric_Factor(args)
+   Factor_score = metric_Factor.get_score(out_z,out_yc)
     
