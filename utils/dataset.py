@@ -18,8 +18,7 @@ It has (737280 x 6, float64) values of the latent factors, under key 'latents_va
 
 import os
 import numpy as np
-from matplotlib import pyplot as plt
-
+import h5py
 import torch
 import torch.utils.data as Data # Dataset, DataLoader
 
@@ -37,7 +36,7 @@ def return_data_dsprites(args):
     image_size = args.image_size
     assert image_size == 64, 'currently only image size of 64 is supported'
 
-    root = os.path.join(dset_dir, 'dsprites_ndarray_co1sh3sc6or40x32y32_64x64.npz')
+    root = os.path.join(dset_dir, 'dsprites.npz')
     data = np.load(root, allow_pickle=True, encoding='bytes')
     imgs = torch.from_numpy(data['imgs']).unsqueeze(1)
     vals = torch.from_numpy(data['latents_values']).unsqueeze(1)
@@ -56,33 +55,24 @@ def return_data_dsprites(args):
 
     return data_loader
 
-def return_data_3dshapes(args):
-    import h5py
-    def vals_to_clas(vals):
-    # ================ Values to classes =======================
-        clas = np.zeros_like(vals)
-        
-        for i in range(clas.shape[1]):
-            table = np.sort(list(set(vals[:,i])))
-            for j in range(len(table)):
-                mask = vals[:,i]==table[j]
-                clas[mask,i] = j
-                
-        return clas
-    
+
+
+
+
+def return_data_3dshapes(args):    
     dset_dir = args.dset_dir
     batch_size = args.batch_size
     num_workers = args.num_workers
     image_size = args.image_size
     assert image_size == 64, 'currently only image size of 64 is supported'
 
-    root = os.path.join(dset_dir, '3dshapes.h5')
-    data = h5py.File(root, 'r')
-    imgs = data['images']  # array shape [480000,64,64,3], uint8 in range(256)
-    vals = np.array(data['labels'])  # array shape [480000,6], float64
-    clas = vals_to_clas(vals)
-    
-    data_set = Data.TensorDataset(imgs, vals, clas)
+    root = os.path.join(dset_dir, '3dshapes.npz')
+    data = np.load(root, allow_pickle=True, encoding='bytes')
+    imgs = torch.from_numpy(data['images'])
+    imgs = torch.transpose(imgs,1,3)
+    vals = torch.from_numpy(data['values']).unsqueeze(1)
+    clas = torch.from_numpy(data['classes']).unsqueeze(1)
+    data_set = Data.TensorDataset(imgs,vals,clas)
 
     train_loader = Data.DataLoader(
                               dataset = data_set,

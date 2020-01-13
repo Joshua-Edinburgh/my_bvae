@@ -32,8 +32,8 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='toy Beta-VAE')
     
-    parser.add_argument('--model_type', default='FVAE', type=str, help='BVAE, CVAE, FVAE, FCVAE or VQVAE')
-    parser.add_argument('--data_type', default='dsprites', type=str, help='dsprites, 3dshapes or colormnist')
+    parser.add_argument('--model_type', default='FCVAE', type=str, help='BVAE, CVAE, FVAE, FCVAE or VQVAE')
+    parser.add_argument('--data_type', default='3dshapes', type=str, help='dsprites, 3dshapes or colormnist')
 
     parser.add_argument('--train', default=True, type=str2bool, help='train or traverse')
     parser.add_argument('--seed', default=1, type=int, help='random seed')

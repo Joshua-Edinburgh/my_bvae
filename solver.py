@@ -22,7 +22,7 @@ from torchvision.utils import save_image
 from utils.basic import cuda, grid2gif
 from model import *
 from utils.dataset import return_data_dsprites, return_data_3dshapes
-from metrics import Metric_DCI, Metric_topsim, Metric_Factor
+from metrics import unpack_batch_y, unpack_batch_z, Metric_DCI, Metric_topsim, Metric_Factor
 from torch.distributions.one_hot_categorical import OneHotCategorical
 
 
@@ -301,7 +301,10 @@ class IVAE_Solver(object):
                 local_iter += 1
                 pbar.update(1)
 
-                x = Variable(cuda(x.float(), self.use_cuda))
+                if (self.data_type).lower()=='dsprites':
+                    x = Variable(cuda(x.float(), self.use_cuda))
+                elif (self.data_type).lower()=='3dshapes':
+                    x = Variable(cuda(x.float()/255, self.use_cuda))
                 
                 if (self.model_type).lower()=='bvae':
                     x_recon, mu, logvar = self.net(x)
@@ -366,16 +369,17 @@ class IVAE_Solver(object):
                     
                     
 
-                if self.global_iter%2000 == 1:
-                    self.gumbel_tmp = np.max((0.5,np.exp((-1e-6)*self.global_iter)))
+                if self.global_iter%2000 == 2:
+                    self.gumbel_tmp = np.max((0.5,np.exp((-5e-5)*self.global_iter)))
                     self.net.gumbel_tmp = self.gumbel_tmp
                     
                 if self.global_iter%self.metric_step == 1:
-                    out_z,out_y, _ = self.gen_z(self.top_sim_batches)
+                    out_z,out_yc = self.gen_z(self.top_sim_batches)
+                    self.save_z_yc_pairs(out_z, out_yc)
                     corr = 0.
-                    #corr = self.metric_topsim.top_sim_zy(out_z[:10],out_y[:10])
-                    Fscore = self.metric_Factor.get_score(out_z,out_y)
-                    dist, comp, info, DCI, R  = self.metric_DCI.dise_comp_info(out_z,out_y,'random_forest')
+                    #corr = self.metric_topsim.top_sim_zy(out_z[:10],out_yc[:10])
+                    Fscore = self.metric_Factor.get_score(out_z,out_yc)
+                    dist, comp, info, DCI, R  = self.metric_DCI.dise_comp_info(out_z,out_yc,'random_forest')                    
                     indx_list.append(self.global_iter)
                     loss_list.append(recon_loss.data.item())
                     corr_list.append(corr)
@@ -390,9 +394,14 @@ class IVAE_Solver(object):
                         f.write('\n [{:0>7d}] \t loss:{:.3f} \t dise:{:.3f} \t comp:{:.3f}\t info:{:.3f} \t DCI:{:.3f}\t FScore:{:.3f}'.format(
                                 self.global_iter, recon_loss.data.item(), dist[-1], comp[-1],info[-1],DCI,Fscore))
                     #print('======================================')
-                if self.global_iter%self.save_step == 1:
+                if self.global_iter%self.save_step == 2:
                     if self.save_gifs:
-                        self.save_gif()
+                        if (self.data_type).lower()=='dsprites':
+                            self.save_gif_dsprites()
+                        elif (self.data_type).lower()=='3dshapes':
+                            self.save_gif_3dshapes()
+                    
+                if self.global_iter%self.save_step == 0:
                     self.save_checkpoint('last')
 
 
@@ -402,7 +411,9 @@ class IVAE_Solver(object):
                 if local_iter >= self.max_iter_per_gen:
                     out = True
                     break
-                
+        # ============== End of one generation ================================
+        out_z,out_yc = self.gen_z(self.top_sim_batches,all_data = True)
+        self.save_z_yc_pairs(out_z, out_yc)        
         np.savez(self.metric_dir+'/metrics_gen'+str(self.global_gen)+'.npz',
                  indx = np.asarray(indx_list),       # (len,)
                  loss = np.asarray(loss_list),       # (len,)
@@ -417,7 +428,7 @@ class IVAE_Solver(object):
         pbar.close()
         sys.stdout.flush()  
         return loss_list
-    def gen_z(self, gen_size=10):
+    def gen_z(self, gen_size=10, all_data = False):
         '''
             Randomly sample x from dataloader, feed it to encoder, generate z
             Return z and true latent value
@@ -430,24 +441,28 @@ class IVAE_Solver(object):
         out = False
         gen_cnt = 0
         out_z = []          # One hot shape [B,z_dim,a_dim], sampled
-        out_y = []
-        out_x = []
+        out_yc = []
         
         while not out:
             for x,y,yc in self.data_loader:
-                out_y.append(yc.squeeze(1)[:,1:])
-                out_x.append(x)
+                out_yc.append(yc.squeeze(1)[:,1:])
                 gen_cnt += 1
-                x = Variable(cuda(x.float(), self.use_cuda))
+                if (self.data_type).lower()=='dsprites':
+                    x = Variable(cuda(x.float(), self.use_cuda))
+                elif (self.data_type).lower()=='3dshapes':
+                    x = Variable(cuda(x.float()/255, self.use_cuda))
                 z = self.net.fd_gen_z(x)  
                 out_z.append(z)                         
-                if gen_cnt >= gen_size:
+                if (all_data==False) and (gen_cnt >= gen_size):
                     out = True
                     break
+                elif all_data == True:
+                    out = False
+            out = True
         self.net_mode(train=True)
-        return out_z, out_y, out_x
+        return out_z, out_yc
 
-    def save_gif(self, limit=3, inter=2/3, loc=-1):
+    def save_gif_dsprites(self, limit=3, inter=2/3, loc=-1):
         self.net_mode(train=False)
         import random
         if (self.model_type).lower() in ['bvae','fvae','vqvae']:
@@ -498,7 +513,7 @@ class IVAE_Solver(object):
                     elif (self.model_type).lower() in ['cvae','fcvae']:
                         z_onehot = z_to_onehot(z,self.z_dim,self.a_dim,self.use_cuda)
                         sample = F.sigmoid(self.net._decode(z_onehot)).data
-                        
+                
                     samples.append(sample)
                     gifs.append(sample)
             samples = torch.cat(samples, dim=0).cpu()
@@ -516,6 +531,114 @@ class IVAE_Solver(object):
             grid2gif(os.path.join(output_dir, key+'*.jpg'),
                      os.path.join(output_dir, key+'.gif'), delay=10)    
         self.net_mode(train=True)
+
+    def save_gif_3dshapes(self, limit=3, inter=2/3, loc=-1):
+        self.net_mode(train=False)
+        import random
+        if (self.model_type).lower() in ['bvae','fvae','vqvae']:
+            interpolation = torch.arange(-limit, limit+0.1, inter)
+        elif (self.model_type).lower() in ['cvae','fcvae']:
+            interpolation = torch.range(0,self.a_dim-1,1)
+        n_dsets = len(self.data_loader.dataset)        
+        rand_idx = random.randint(1, n_dsets-1)
+        
+        random_img, _, _ = self.data_loader.dataset.__getitem__(rand_idx)
+        random_img = Variable(cuda(random_img.float()/255, self.use_cuda), volatile=True).unsqueeze(0)
+        random_img_z = self.net.fd_gen_z(random_img)
+        
+        fixed_idx1 = 5940  # shape1     [0,1,2,3,0,0]
+        fixed_idx2 = 53955 # shape2     [1,1,2,3,1,0]
+        fixed_idx3 = 169155 # shape3    [3,5,2,3,2,0]
+        fixed_idx4 = 243405 # shape4      [5,0,7,0,3,0]
+
+        fixed_img1, _, _ = self.data_loader.dataset.__getitem__(fixed_idx1)
+        fixed_img1 = Variable(cuda(fixed_img1.float()/255, self.use_cuda), volatile=True).unsqueeze(0)
+        fixed_img_z1 = self.net.fd_gen_z(fixed_img1)
+        
+
+        fixed_img2, _, _= self.data_loader.dataset.__getitem__(fixed_idx2)
+        fixed_img2 = Variable(cuda(fixed_img2.float()/255, self.use_cuda), volatile=True).unsqueeze(0)
+        fixed_img_z2 = self.net.fd_gen_z(fixed_img2)
+
+        fixed_img3, _, _ = self.data_loader.dataset.__getitem__(fixed_idx3)
+        fixed_img3 = Variable(cuda(fixed_img3.float()/255, self.use_cuda), volatile=True).unsqueeze(0)
+        fixed_img_z3 = self.net.fd_gen_z(fixed_img3)
+
+        fixed_img4, _, _ = self.data_loader.dataset.__getitem__(fixed_idx4)
+        fixed_img4 = Variable(cuda(fixed_img4.float()/255, self.use_cuda), volatile=True).unsqueeze(0)
+        fixed_img_z4 = self.net.fd_gen_z(fixed_img4)
+
+        Z = {'fixed_s1':fixed_img_z1, 'fixed_s2':fixed_img_z2,
+             'fixed_s3':fixed_img_z3, 'fixed_s4':fixed_img_z4}
+             #'random_img':random_img_z}
+        gifs = []
+        for key in Z.keys():
+            z_ori = Z[key]
+            for row in range(self.z_dim):
+                if loc != -1 and row != loc:
+                    continue
+                z = z_ori.clone()         
+                for val in interpolation:
+                    z[:, row] = val                     
+                    if (self.model_type).lower() in ['bvae','fvae']:
+                        sample = F.sigmoid(self.net._decode(z)).data.transpose(-1,-2)
+                    elif (self.model_type).lower() in ['vqvae']:
+                        z_reshape = self.net.find_nearest(z,self.net.embd.weight).view(-1,self.z_dim,1,1)
+                        sample = F.sigmoid(self.net._decode(z_reshape)).data.transpose(-1,-2)
+                    elif (self.model_type).lower() in ['cvae','fcvae']:
+                        z_onehot = z_to_onehot(z,self.z_dim,self.a_dim,self.use_cuda)
+                        sample = F.sigmoid(self.net._decode(z_onehot)).data.transpose(-1,-2)
+                    gifs.append(sample)
+        '''
+        # ============= Test for the image saver ==========
+        val_table = [10,10,10,8,4,15]
+        interpolation = torch.range(0,15,1)
+        def cla_to_idx(cla):
+            gap_table = [48000, 4800, 480, 60, 15,1]
+            idx = 0
+            for i in range(6):
+                idx += cla[i]*gap_table[i]
+            return idx
+        
+        img_vector = np.array([0,0,0,0,0,0])
+        for kk in range(4):
+            img_vector[4] = kk
+            for i in range(6):
+                for j in range(16):
+                    if j < val_table[i]:
+                        img_vector[i] = j
+                    else:
+                        img_vector[i] = val_table[i]-1
+                    img_idx = cla_to_idx(img_vector)
+                    
+                    sample,_,_ = self.data_loader.dataset.__getitem__(img_idx)
+                    sample = Variable(cuda(sample.float()/255, self.use_cuda), volatile=True).unsqueeze(0)
+                    sample = sample.transpose(-1,-2).data
+                    gifs.append(sample)
+                
+        # ============= End of Test for the image saver ==========
+       '''
+        output_dir = os.path.join(self.imgs_dir, str(self.global_iter))
+        os.makedirs(output_dir, exist_ok=True)
+        gifs = torch.cat(gifs)
+        gifs = gifs.view(len(Z), self.z_dim, len(interpolation), self.nc, 64, 64).transpose(1, 2)
+        for i, key in enumerate(Z.keys()):
+            for j, val in enumerate(interpolation):
+                save_image(tensor=gifs[i][j].cpu(),
+                           filename=os.path.join(output_dir, '{}_{}.jpg'.format(key, j)),
+                           nrow=self.z_dim, pad_value=1)
+
+            grid2gif(os.path.join(output_dir, key+'*.jpg'),
+                     os.path.join(output_dir, key+'.gif'), delay=10)    
+        self.net_mode(train=True)
+
+    def save_z_yc_pairs(self, out_z, out_yc):
+        z_upk = unpack_batch_z(out_z)
+        yc_upk = unpack_batch_y(out_yc)
+        np.savez(self.metric_dir+'/zyc_pairs_gen'+str(self.global_gen)+'_it'+str(self.global_iter)+'.npz',
+                 z = z_upk.cpu().numpy(),
+                 yc = yc_upk.cpu().numpy()
+                 )             
         
     def net_mode(self, train):
         if not isinstance(train, bool):
