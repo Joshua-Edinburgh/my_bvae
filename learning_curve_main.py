@@ -15,6 +15,7 @@ from solver import IVAE_Solver, reconstruction_loss
 from utils.basic import str2bool
 from torch.autograd import Variable
 from utils.basic import cuda
+from utils.dataset import z_values_dsprites, z_values_3dshapes
 from model import reparametrize
 from tqdm import tqdm
 import sys
@@ -56,181 +57,128 @@ def smooth_x(x,ratio=10):
         new_x[i] = tmp
     return new_x
 
-
-def prepare_dataset(args, dataset_zip,smp_size=5000):
-    def latent_to_index(latents):
-      return np.dot(latents, latents_bases).astype(int)
+def clas_to_vals(args, clas):
+    if args.data_type.lower() == 'dsprites':
+        z_values = z_values_dsprites        
+    elif args.data_type.lower() == '3dshapes':
+        z_values = z_values_3dshapes 
+        
+    data_len, dim_len = clas.shape[0], clas.shape[1]
+    vals = np.zeros(clas.shape)
+    key_list = list(z_values.keys())
     
-    def sample_latent(size=1):
-      samples = np.zeros((size, latents_sizes.size))
-      for lat_i, lat_size in enumerate(latents_sizes):
-        samples[:, lat_i] = np.random.randint(lat_size, size=size)
+    for dim_idx in range(dim_len):
+        tmp_dim_vals = z_values[key_list[dim_idx]]
+        for idx in range(data_len):
+            tmp_clas = clas[idx, dim_idx]
+            vals[idx, dim_idx] = tmp_dim_vals[tmp_clas]        
     
-      return samples
-    imgs = dataset_zip['imgs']
-    latents_values = dataset_zip['latents_values']   
-    
-    latents_classes = dataset_zip['latents_classes']
-    metadata = dataset_zip['metadata'][()]
-    latents_sizes = metadata[b'latents_sizes']
-    latents_bases = np.concatenate((latents_sizes[::-1].cumprod()[::-1][1:],
-                                    np.array([1,])))        
+    return vals
 
-    latents_sampled = sample_latent(size=smp_size)  
-    #latents_sampled[:, -5] = 2       # Fix shape
-    #latents_sampled[:, -4] = 3       # Fix size
-    #latents_sampled[:, -3] = 20      # Fix rotation
-    #latents_sampled[:, -2] = 16      # Fix pos_x
-    #latents_sampled[:, -1] = 16      # Fix pos_y
-    
-    indices_sampled = latent_to_index(latents_sampled)
-    out_x = imgs[indices_sampled]           # Size is smp_size*64*64        
-    out_y = latents_values[indices_sampled,:] # Size is smp_size*64*64    
-    out_yc = latents_sampled[:,:]
+
+def data_to_batches(args, zyc_pairs, shuffle=True):
+    z, yc = zyc_pairs['z'], zyc_pairs['yc']  
+    yv = clas_to_vals(args, yc)
+    batch_size = args.batch_size
+    data_length = z.shape[0]
+    permut_mask = np.arange(0,data_length,1)
+    np.random.shuffle(permut_mask)
+    z, yc, yv = z[permut_mask], yc[permut_mask], yv[permut_mask]
+    z = torch.from_numpy(z)
+    yc = torch.from_numpy(yc)
+    yv = torch.from_numpy(yv)
 
     
-    perm_table = np.arange(0,out_y.shape[0],1)
-    np.random.shuffle(perm_table)
-    perm_y, perm_yc = out_y[perm_table], out_yc[perm_table]
+    if args.model_type.lower() in ['fcvae','cvae']:
+        z = Variable(cuda(z.long(), args.cuda))
+    elif args.model_type.lower() in ['fvae','bvae']:
+        z = Variable(cuda(z.float(), args.cuda)).unsqueeze(-1).unsqueeze(-1)
+    yc = Variable(cuda(yc.long(), args.cuda))
+    yv = Variable(cuda(yv.float(), args.cuda))
     
-    imgs = torch.from_numpy(out_x).unsqueeze(1)
-    vals = torch.from_numpy(out_y).unsqueeze(1)
-    clas = torch.from_numpy(out_yc).unsqueeze(1).int()
-    data_set = Data.TensorDataset(imgs,vals,clas)
+    z_batch, yc_batch, yv_batch = [], [], []
+    out = False
+    idx = 0
+    while not out:
+        if idx+batch_size>data_length:
+            out = True
+            break
+        z_batch.append(z[idx:idx+batch_size,:])
+        yc_batch.append(yc[idx:idx+batch_size,:])
+        yv_batch.append(yv[idx:idx+batch_size,:])
+        idx = idx+batch_size
+    
+    return z_batch, yc_batch, yv_batch
 
-    orig_loader = Data.DataLoader(
-                              dataset = data_set,
-                              batch_size=args.batch_size,
-                              shuffle=True,
-                              num_workers=0,
-                              pin_memory=True,
-                              drop_last=True)
-
-    perm_vals = torch.from_numpy(perm_y).unsqueeze(1)
-    perm_clas = torch.from_numpy(perm_yc).unsqueeze(1).int() 
-    perm_data_set = Data.TensorDataset(imgs, perm_vals, perm_clas)
-
-    perm_loader = Data.DataLoader(
-                              dataset = perm_data_set,
-                              batch_size=args.batch_size,
-                              shuffle=True,
-                              num_workers=0,
-                              pin_memory=True,
-                              drop_last=True)
-
-    return orig_loader, perm_loader    
-
-
-def decoder_curves(args, data_loader, flag=False):    
+def encoder_curves(args, out_z, out_yc, out_yv, flag=False):
     seed = args.seed
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     np.random.seed(seed)
 
-    net = IVAE_Solver(args)
-    net.net_mode(True)
-    out = False
-    
-    pre_DE_cnt = 0
-    pbar = tqdm(total=net.niter_preDE)
-    pbar.update(pre_DE_cnt)
-    loss_table = []
-    
-    while not out:
-        for x, y, yc in data_loader:
-            x = Variable(cuda(x.float(), net.use_cuda))
-            y = Variable(cuda(y.float(), net.use_cuda))
-            yc = Variable(cuda(yc.long(), net.use_cuda))
-            cut_yc = yc.squeeze(1)[:,1:]
-            zero_matrix = Variable(cuda(torch.zeros(args.batch_size,args.z_dim,args.a_dim), net.use_cuda))
-            z_onehot = zero_matrix.scatter_(2,cut_yc.unsqueeze(-1),1)
-            z_onehot_input = z_onehot.view(z_onehot.size(0),-1)
-            
-            x_recon = net.net._decode(z_onehot_input) 
-            loss = reconstruction_loss(x, x_recon, 'bernoulli')
-            loss_table.append(loss.data.item())
-            
-            net.optim_DE.zero_grad()
-            loss.backward()
-            net.optim_DE.step()
-            
-            if pre_DE_cnt >= net.niter_preDE:
-                out = True
-                break
-            pre_DE_cnt += 1
-            pbar.update(1)
-            
-    pbar.write("[Pretrain Encoder Finished]") 
-    pbar.close() 
-    sys.stdout.flush() 
+    solver = IVAE_Solver(args)
+    solver.net_mode(True)
+    if args.model_type.lower() in ['fcvae','cvae']:
+        loss_table = solver.pre_train_EN(out_z, out_yc)
+    elif args.model_type.lower() in ['fvae','bvae']:
+        loss_table = solver.pre_train_EN(out_z, out_yc)
     return loss_table
 
-def encoder_curves(args,data_loader,flag=False):
+
+def decoder_curves(args, out_z, out_yc, out_yv, flag=False):
     seed = args.seed
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     np.random.seed(seed)
 
-    net = IVAE_Solver(args)
-    net.net_mode(True)
-    out = False
-    
-    pre_EN_cnt = 0
-    pbar = tqdm(total=net.niter_preEN)
-    pbar.update(pre_EN_cnt)
-    loss_fun = torch.nn.CrossEntropyLoss()
-    loss_table = []
-    while not out:
-        for x, y, yc in data_loader:
-            x = Variable(cuda(x.float(), net.use_cuda))
-            y = Variable(cuda(y.float(), net.use_cuda))
-            yc = Variable(cuda(yc.long(), net.use_cuda))
-            cut_yc = yc.squeeze(1)[:,1:]
-            
-            hidden = net.net._encode(x)
-            hidden_matrix = hidden.view(-1,args.z_dim,args.a_dim).transpose(1,2)
-            
-            loss = loss_fun(hidden_matrix,cut_yc)
-            loss_table.append(loss.data.item())
-            
-            net.optim_EN.zero_grad()
-            loss.backward()
-            net.optim_EN.step()
-              
-            if pre_EN_cnt >= net.niter_preEN:
-                out = True
-                break
-            pre_EN_cnt += 1
-            pbar.update(1)
-    pbar.write("[Pretrain Encoder Finished]") 
-    pbar.close() 
-    sys.stdout.flush()  
-
+    solver = IVAE_Solver(args)
+    solver.net_mode(True)
+    if args.model_type.lower() in ['fcvae','cvae']:
+        loss_table = solver.pre_train_DE(out_z, out_yc)
+    elif args.model_type.lower() in ['fvae','bvae']:
+        loss_table = solver.pre_train_DE(out_z, out_yc)
     return loss_table
 
+def gen_perfect_z(args, zyc_pairs):
+    zyc_pairs_perfect = {}
+    z_dim = args.z_dim
+    yc = zyc_pairs['yc'] 
+    yv = clas_to_vals(args, yc)
+    data_len = yc.shape[0]
+    dim_len = yc.shape[1]
+    zeros = np.zeros((data_len, z_dim-dim_len))
+    if args.model_type.lower() in ['fcvae','cvae']:
+        tmp_z = np.concatenate((yc,zeros),axis=1)
+    elif args.model_type.lower() in ['fvae','bvae']:
+        tmp_z = np.concatenate((yv,zeros),axis=1)
+    zyc_pairs_perfect['z'] = tmp_z
+    zyc_pairs_perfect['yc'] = yc
+    return zyc_pairs_perfect
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='toy Beta-VAE')
     
-    parser.add_argument('--discrete_z', default=True, type=str2bool, help='Whether use discrete_z')
+    parser.add_argument('--model_type', default='FVAE', type=str, help='BVAE, CVAE, FVAE, FCVAE or VQVAE')
+    parser.add_argument('--data_type', default='3dshapes', type=str, help='dsprites, 3dshapes or colormnist')
 
     parser.add_argument('--train', default=True, type=str2bool, help='train or traverse')
-    parser.add_argument('--seed', default=1, type=int, help='random seed')
+    parser.add_argument('--seed', default=12345, type=int, help='random seed')
     parser.add_argument('--cuda', default=True, type=str2bool, help='enable cuda')
     parser.add_argument('--max_iter_per_gen', default=10, type=int, help='maximum training iteration per generation')
-    parser.add_argument('--max_gen', default=10, type=int, help='number of generations')
-    parser.add_argument('--batch_size', default=16, type=int, help='batch size')
+    parser.add_argument('--max_gen', default=2, type=int, help='number of generations')
+    parser.add_argument('--batch_size', default=128, type=int, help='batch size')
 
-    parser.add_argument('--z_dim', default=5, type=int, help='dimension of the representation z')
-    parser.add_argument('--a_dim', default=200, type=int, help='dimension of the representation z')
+    parser.add_argument('--z_dim', default=10, type=int, help='dimension of the representation z')
+    parser.add_argument('--a_dim', default=40, type=int, help='dimension of the representation z')
     parser.add_argument('--beta', default=4, type=float, help='beta parameter for KL-term in original beta-VAE')
-    parser.add_argument('--lr', default=1e-3, type=float, help='learning rate')
+    parser.add_argument('--gamma', default=30, type=float, help='gamma parameter for Factor-VAE')
+    parser.add_argument('--lr', default=5e-4, type=float, help='learning rate')
     parser.add_argument('--beta1', default=0.9, type=float, help='Adam optimizer beta1')
-    parser.add_argument('--beta2', default=0.99, type=float, help='Adam optimizer beta2')
+    parser.add_argument('--beta2', default=0.999, type=float, help='Adam optimizer beta2')
 
-    parser.add_argument('--nb_preENDE', default=100, type=int, help='Number of batches for pre-train encoder and decoder')
-    parser.add_argument('--niter_preEN', default=10000, type=int, help='Number of max iterations for pre-train encoder')
-    parser.add_argument('--niter_preDE', default=8000, type=int, help='Number of max iterations for pre-train decoder')
+    parser.add_argument('--nb_preENDE', default=10, type=int, help='Number of batches for pre-train encoder and decoder')
+    parser.add_argument('--niter_preEN', default=1500, type=int, help='Number of max iterations for pre-train encoder')
+    parser.add_argument('--niter_preDE', default=1000, type=int, help='Number of max iterations for pre-train decoder')
 
     parser.add_argument('--dset_dir', default='data', type=str, help='dataset directory')
     parser.add_argument('--image_size', default=64, type=int, help='image size. now only (64,64) is supported')
@@ -239,31 +187,34 @@ if __name__ == "__main__":
     parser.add_argument('--save_step', default=1e5, type=int, help='number of iterations after which a checkpoint is saved')
     parser.add_argument('--metric_step',default=1e4, type=int, help='number of iterations after which R and top_sim metric saved')
     parser.add_argument('--top_sim_batches',default=1000,type=int, help='number of batches of sampling z when calculating top_sim and R')
-    parser.add_argument('--save_gifs',default=True, type=str2bool, help='whether save the gifs')
+    parser.add_argument('--save_gifs',default=False, type=str2bool, help='whether save the gifs')
 
     parser.add_argument('--ckpt_dir', default='checkpoints', type=str, help='checkpoint directory')
     parser.add_argument('--ckpt_name', default='last', type=str, help='load previous checkpoint. insert checkpoint filename')
-    parser.add_argument('--exp_name', default='test', type=str, help='name of the experiment')
+    parser.add_argument('--exp_name', default='test_learning_curves', type=str, help='name of the experiment')
     
     args = parser.parse_args()
 
-    data_not_load = True
-    if data_not_load:
-        root = os.path.join(args.dset_dir,'dsprites_ndarray_co1sh3sc6or40x32y32_64x64.npz')
-        dataset_zip = np.load(root, allow_pickle=True, encoding='bytes')
-        data_not_load = False
-        
-    data_loader,perm_loader = prepare_dataset(args, dataset_zip,smp_size=5000)
-
-     
-#    loss_table1 = decoder_curves(args,data_loader,False)
-#    loss_table2 = decoder_curves(args,perm_loader,False)
-    loss_table1 = encoder_curves(args,data_loader,False)
-    loss_table2 = encoder_curves(args,perm_loader,False)
+    zyc_pairs1 = np.load('test_learning_curves/zyc_pairs_gen1_it1350001.npz')
+    zyc_pairs2 = np.load('test_learning_curves/zyc_pairs_gen1_it100001.npz')
+    zyc_pairs_perfect = gen_perfect_z(args, zyc_pairs1)
+   
+    out_z1, out_yc1, out_yv1 = data_to_batches(args, zyc_pairs1)
+    out_z2, out_yc2, out_yv2 = data_to_batches(args, zyc_pairs2)
+    out_zp, out_ycp, out_yvp = data_to_batches(args, zyc_pairs_perfect)
+    loss_table1 = encoder_curves(args, out_z1, out_yc1, out_yv1)
+    loss_table2 = encoder_curves(args, out_z2, out_yc2, out_yv2)
+#    loss_tablep = encoder_curves(args, out_zp, out_ycp, out_yvp)
+ 
+#    loss_table1 = decoder_curves(args, out_z1, out_yc1, out_yv1)
+#    loss_table2 = decoder_curves(args, out_z2, out_yc2, out_yv2)
+#    loss_tablep = decoder_curves(args, out_zp, out_ycp, out_yvp)
     
-    x_axis = np.arange(0,len(loss_table1),1)
-    plt.plot(x_axis,smooth_x(loss_table1,10),'r',label='origin')
-    plt.plot(x_axis,smooth_x(loss_table2,10),'b',label='permut')
+    x = np.arange(0,len(loss_table1),1)
+    plt.plot(x, loss_table1,label='High-DCI')
+    plt.plot(x, loss_table2,label='Low-DCI')
+#    plt.plot(x,loss_tablep,label='Perfect-DCI')
+    plt.ylim(0,2)
     plt.legend()
-    plt.grid(True)
-    plt.show()
+  
+        

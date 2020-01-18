@@ -104,7 +104,7 @@ class BetaVAE_H(nn.Module):
         z = reparametrize(mu, logvar)
         x_recon = self._decode(z)
 
-        return x_recon, mu, logvar
+        return x_recon, mu, logvar, z.squeeze()
 
     def fd_gen_z(self, x):
         distributions = self._encode(x)
@@ -180,7 +180,8 @@ class CVAE(nn.Module):
         sftmx = F.softmax(hidden_matrix,dim=-1)
         z_matrix = RelaxedOneHotCategorical(self.gumbel_tmp, probs=sftmx).rsample()
         x_recon = self._decode(z_matrix.view(-1,self.z_dim*self.a_dim))
-        return x_recon, sftmx
+        z_argmx = OneHotCategorical(probs=sftmx).sample().argmax(dim=-1)
+        return x_recon, sftmx, z_argmx.squeeze().float()
         
 
     def fd_gen_z(self, x):

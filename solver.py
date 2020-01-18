@@ -1,8 +1,5 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 Created on Fri Oct 11 13:42:56 2019
-
 @author: xiayezi
 """
 import warnings
@@ -190,19 +187,19 @@ class IVAE_Solver(object):
         out_z = []
         out_x = []
         for gen_idx in range(int(self.max_gen)):
+            self.net.weight_init()
+            if (self.model_type).lower() in ['fvae','fcvae']:
+                self.D.weight_init()
+                
             self.global_gen += 1
             print('\n======= This is generation{:>2d}/{:>2d}  ======'.format(gen_idx+1,self.max_gen))
             if gen_idx != 0:
-                print('------ Pretraining Encoder {:>2d}/{:>2d} ------'.format(gen_idx+1,self.max_gen))
+                print('------ Pretraining Encoder and Decoder {:>2d}/{:>2d} ------'.format(gen_idx+1,self.max_gen))
                 sys.stdout.flush()
-                self.net.encoder_init()
-                loss_table1 = self.pre_train_EN(out_z, out_x)
-                         
+                loss_table1 = self.pre_train_EN(out_z, out_yc)                         
             if gen_idx != 0:
-                print('------ Pretraining Decoder {:>2d}/{:>2d} ------'.format(gen_idx+1,self.max_gen))
                 sys.stdout.flush() 
-                self.net.decoder_init()
-                loss_table2 = self.pre_train_DE(out_z, out_x)
+                loss_table2 = self.pre_train_DE(out_z, out_yc)
                
             print('------ Interactive Training {:>2d}/{:>2d} -----'.format(gen_idx+1,self.max_gen))
             sys.stdout.flush()
@@ -210,24 +207,30 @@ class IVAE_Solver(object):
                        
             print('------- Data Generating {:>2d}/{:>2d} ---------'.format(gen_idx+1,self.max_gen))
             sys.stdout.flush()  
-            out_z, _, out_x = self.gen_z(self.nb_preENDE)
+            out_z, out_yc = self.gen_z(self.nb_preENDE)
             
-    def pre_train_EN(self, out_z, out_x):
+    def pre_train_EN(self, out_z, out_yc):
         self.net_mode(True)
         out = False
         pre_EN_cnt = 0
         pbar = tqdm(total=self.niter_preEN)
         pbar.update(pre_EN_cnt)
-        loss_fun = torch.nn.CrossEntropyLoss()
         loss_table = []
         while not out:  
-            for z,x in zip(out_z,out_x): 
-                loss = Variable(cuda(x.float(), self.use_cuda))
-                x = Variable(cuda(x.float(), self.use_cuda))
-                z_hat = self.net._encode(x).view(-1,self.z_dim,self.a_dim).transpose(1,2)
-                loss = loss_fun(z_hat,z)
-                loss_table.append(loss.data.item())
+            for z,yc in zip(out_z,out_yc): 
+                x = self.yc_to_x(yc)
                 
+                if (self.model_type).lower() in ['bvae', 'fvae']:
+                    _, mu, logvar, z_hat = self.net(x)
+                    loss_fun = torch.nn.MSELoss()
+                    loss = loss_fun(z_hat,z.squeeze())
+                    loss_table.append(loss.data.item())
+                elif (self.model_type).lower() in ['cvae', 'fcvae']:
+                    loss_fun = torch.nn.CrossEntropyLoss()
+                    z_hat = self.net._encode(x).view(-1,self.z_dim,self.a_dim).transpose(1,2)
+                    loss = loss_fun(z_hat,z.long())
+                    loss_table.append(loss.data.item())
+                    
                 self.optim_EN.zero_grad()
                 loss.backward()
                 self.optim_EN.step()
@@ -242,7 +245,7 @@ class IVAE_Solver(object):
         sys.stdout.flush()               
         return loss_table
     
-    def pre_train_DE(self,out_z,out_x):
+    def pre_train_DE(self,out_z,out_yc):
         self.net_mode(True)        
         out = False
         pre_DE_cnt = 0
@@ -251,13 +254,15 @@ class IVAE_Solver(object):
         loss_table = []
         
         while not out:
-            for z, x in zip(out_z, out_x):
-                x = Variable(cuda(x.float(), self.use_cuda))
-                z = Variable(cuda(z.float(), self.use_cuda))
+            for z, yc in zip(out_z, out_yc):
+                x = self.yc_to_x(yc)
                 
-                z_onehot = z_to_onehot(z,self.z_dim,self.a_dim,self.use_cuda)
-                
-                x_recon = self.net._decode(z_onehot)     
+                if (self.model_type).lower() in ['bvae', 'fvae']:
+                    x_recon = self.net._decode(z)   
+                elif (self.model_type).lower() in ['cvae', 'fcvae']:
+                    z_onehot = z_to_onehot(z,self.z_dim,self.a_dim,self.use_cuda)
+                    x_recon = self.net._decode(z_onehot) 
+                    
                 loss = reconstruction_loss(x, x_recon, self.decoder_dist)
                 loss_table.append(loss.data.item())
                 
@@ -296,18 +301,18 @@ class IVAE_Solver(object):
             f.write('\n====== Experiment name: '+self.exp_name+'==============')
             
         while not out:
-            for x,y,yc in self.data_loader:
+            for x,_,_ in self.data_loader:
                 self.global_iter += 1
                 local_iter += 1
                 pbar.update(1)
-
+                
                 if (self.data_type).lower()=='dsprites':
                     x = Variable(cuda(x.float(), self.use_cuda))
                 elif (self.data_type).lower()=='3dshapes':
                     x = Variable(cuda(x.float()/255, self.use_cuda))
                 
                 if (self.model_type).lower()=='bvae':
-                    x_recon, mu, logvar = self.net(x)
+                    x_recon, mu, logvar, _ = self.net(x)
                     recon_loss = reconstruction_loss(x, x_recon, self.decoder_dist)
                     total_kld, _dim_wise_kld, _mean_kld = KLD_Gaussian(mu, logvar)
                     beta_vae_loss = recon_loss + self.beta*total_kld
@@ -317,7 +322,7 @@ class IVAE_Solver(object):
                     self.optim.step()     
                     
                 elif (self.model_type).lower()=='cvae':
-                    x_recon, sftmx = self.net(x)
+                    x_recon, sftmx, _ = self.net(x)
                     recon_loss = reconstruction_loss(x, x_recon, self.decoder_dist)
                     total_kld = KLD_Catagorical(sftmx)
                     cvae_loss = recon_loss + self.beta*total_kld
@@ -330,9 +335,7 @@ class IVAE_Solver(object):
                     half = int(self.batch_size/2)
                     ones = Variable(cuda(torch.ones(half, dtype=torch.long),self.use_cuda))
                     zeros = Variable(cuda(torch.zeros(half, dtype=torch.long),self.use_cuda))                    
-                    x1, x2 = x[:half], x[half:]
-                    y1, y2 = y[:half], y[half:]
-                    yc1, yc2 = yc[:half], yc[half:]     
+                    x1, x2 = x[:half], x[half:]  
                     if (self.model_type).lower() == 'fvae':
                         x_recon, mu, logvar, z = self.net(x1)
                         total_kld, _, _ = KLD_Gaussian(mu, logvar) 
@@ -445,12 +448,14 @@ class IVAE_Solver(object):
         
         while not out:
             for x,y,yc in self.data_loader:
-                out_yc.append(yc.squeeze(1)[:,1:])
-                gen_cnt += 1
+                out_yc.append(yc.squeeze(1))
+                
                 if (self.data_type).lower()=='dsprites':
                     x = Variable(cuda(x.float(), self.use_cuda))
                 elif (self.data_type).lower()=='3dshapes':
                     x = Variable(cuda(x.float()/255, self.use_cuda))
+                    
+                gen_cnt += 1
                 z = self.net.fd_gen_z(x)  
                 out_z.append(z)                         
                 if (all_data==False) and (gen_cnt >= gen_size):
@@ -612,7 +617,7 @@ class IVAE_Solver(object):
                     img_idx = cla_to_idx(img_vector)
                     
                     sample,_,_ = self.data_loader.dataset.__getitem__(img_idx)
-                    sample = Variable(cuda(sample.float()/255, self.use_cuda), volatile=True).unsqueeze(0)
+                    sample = Variable(cuda(sample.float(), self.use_cuda), volatile=True).unsqueeze(0)
                     sample = sample.transpose(-1,-2).data
                     gifs.append(sample)
                 
@@ -639,6 +644,22 @@ class IVAE_Solver(object):
                  z = z_upk.cpu().numpy(),
                  yc = yc_upk.cpu().numpy()
                  )             
+
+    def yc_to_x(self, yc):
+        if (self.data_type).lower()=='dsprites':
+            gap_table = [245760, 40960, 1024, 32, 1]
+        elif (self.data_type).lower()=='3dshapes':
+            gap_table = [48000, 4800, 480, 60, 15,1]       
+        idx = 0
+        for i in range(len(gap_table)):
+            idx += yc[:,i]*gap_table[i]
+        x,_,_ = self.data_loader.dataset.__getitem__(idx)
+        if (self.data_type).lower()=='dsprites':
+            x = Variable(cuda(x.float(), self.use_cuda))
+            return x
+        elif (self.data_type).lower()=='3dshapes':
+            x = Variable(cuda(x.float()/255, self.use_cuda))
+            return x
         
     def net_mode(self, train):
         if not isinstance(train, bool):
@@ -680,9 +701,3 @@ class IVAE_Solver(object):
             print("=> no checkpoint found at '{}'".format(file_path))        
         
  
-        
-        
-        
-
-
-

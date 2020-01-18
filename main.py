@@ -33,13 +33,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='toy Beta-VAE')
     
     parser.add_argument('--model_type', default='FCVAE', type=str, help='BVAE, CVAE, FVAE, FCVAE or VQVAE')
-    parser.add_argument('--data_type', default='3dshapes', type=str, help='dsprites, 3dshapes or colormnist')
+    parser.add_argument('--data_type', default='dsprites', type=str, help='dsprites, 3dshapes or colormnist')
 
     parser.add_argument('--train', default=True, type=str2bool, help='train or traverse')
     parser.add_argument('--seed', default=1, type=int, help='random seed')
     parser.add_argument('--cuda', default=True, type=str2bool, help='enable cuda')
     parser.add_argument('--max_iter_per_gen', default=10, type=int, help='maximum training iteration per generation')
-    parser.add_argument('--max_gen', default=10, type=int, help='number of generations')
+    parser.add_argument('--max_gen', default=2, type=int, help='number of generations')
     parser.add_argument('--batch_size', default=64, type=int, help='batch size')
 
     parser.add_argument('--z_dim', default=10, type=int, help='dimension of the representation z')
@@ -50,9 +50,9 @@ if __name__ == "__main__":
     parser.add_argument('--beta1', default=0.9, type=float, help='Adam optimizer beta1')
     parser.add_argument('--beta2', default=0.999, type=float, help='Adam optimizer beta2')
 
-    parser.add_argument('--nb_preENDE', default=100, type=int, help='Number of batches for pre-train encoder and decoder')
-    parser.add_argument('--niter_preEN', default=2000, type=int, help='Number of max iterations for pre-train encoder')
-    parser.add_argument('--niter_preDE', default=800, type=int, help='Number of max iterations for pre-train decoder')
+    parser.add_argument('--nb_preENDE', default=10, type=int, help='Number of batches for pre-train encoder and decoder')
+    parser.add_argument('--niter_preEN', default=20, type=int, help='Number of max iterations for pre-train encoder')
+    parser.add_argument('--niter_preDE', default=10, type=int, help='Number of max iterations for pre-train decoder')
 
     parser.add_argument('--dset_dir', default='data', type=str, help='dataset directory')
     parser.add_argument('--image_size', default=64, type=int, help='image size. now only (64,64) is supported')
@@ -77,7 +77,7 @@ if __name__ == "__main__":
     np.random.seed(seed)
 
     net = IVAE_Solver(args)
-    loss_list = net.interact_train()
+    loss_list = net.iterated_learning()
 
 #    out_z, out_yc, out_x = net.gen_z(gen_size=args.nb_preENDE)
     
